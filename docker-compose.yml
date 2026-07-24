@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    ports: ["5000:5000"]
+    volumes:
+      - ./shared:/app/shared
+      - ./oci_config:/root/.oci:ro
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://172.19.10.143:6379/8
+    networks: [hub-net]
+
+  worker:
+    build: ./backend
+    command: celery -A celery_worker.celery worker --loglevel=info --concurrency=2
+    volumes:
+      - ./shared:/app/shared
+      - ./oci_config:/root/.oci:ro
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://172.19.10.143:6379/8
+    networks: [hub-net]
+
+  frontend:
+    build: ./frontend
+    ports: ["3000:80"]
+    depends_on: [backend]
+    networks: [hub-net]
+
+networks:
+  hub-net:
+    driver: bridge

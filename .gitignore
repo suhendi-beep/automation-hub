@@ -1,0 +1,34 @@
+# Environment & secrets
+.env
+*.pem
+
+# OCI config (berisi API key)
+oci_config/
+
+# Shared output files
+shared/reports/
+shared/screenshots/
+shared/logs/
+shared/cookies/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Zone identifier (Windows WSL)
+*.Identifier
+
+# Docker
+*.tar.gz
+
+# Temp files
+*.log
+*.tmp
