@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { logActivity } from "../activityLog.js";
 
 /* ── Constants ── */
-const OLD_STORAGE_KEY = "portal_report_daily_tasks"; // localStorage lama — untuk migrasi sekali
+const OLD_STORAGE_KEY = "portal_report_daily_tasks";
 const STATUS_OPTIONS  = ["In Progress", "Close", "Pending", "Cancelled"];
 const STATUS_STYLE    = {
   "Close":       { bg:"rgba(34,197,94,.1)",  text:"#4ADE80", border:"rgba(34,197,94,.25)"  },
@@ -16,6 +16,9 @@ const apiGet    = ()            => fetch("/api/tasks").then(r => r.json());
 const apiCreate = (task)        => fetch("/api/tasks",            { method:"POST",   headers:{"Content-Type":"application/json"}, body:JSON.stringify(task)   }).then(r => r.json());
 const apiUpdate = (id, changes) => fetch(`/api/tasks/${id}`,      { method:"PUT",    headers:{"Content-Type":"application/json"}, body:JSON.stringify(changes)}).then(r => r.json());
 const apiDelete = (id)          => fetch(`/api/tasks/${id}`,      { method:"DELETE" }).then(r => r.json());
+const apiRequestDelete  = (id, user) => fetch(`/api/tasks/${id}/request-delete`,  { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(user)  }).then(r => r.json());
+const apiApproveDelete  = (id, action) => fetch(`/api/tasks/${id}/approve-delete`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action}) }).then(r => r.json());
+const apiPendingDeletes = ()    => fetch("/api/tasks/pending-deletes").then(r => r.json());
 
 /* ── One-time migration: DISABLED — data lama sudah dibersihkan ── */
 async function migrateLocalStorage() {
@@ -98,16 +101,23 @@ const makeEmptyForm = () => ({
 });
 
 export default function DailyTask({ customers }) {
-  const [tasks,        setTasks]        = useState([]);
-  const [loading,      setLoading]      = useState(true);
-  const [showModal,    setShowModal]    = useState(false);
-  const [editId,       setEditId]       = useState(null);
-  const [form,         setForm]         = useState(makeEmptyForm);
-  const [filterDate,   setFilterDate]   = useState("");
-  const [filterCust,   setFilterCust]   = useState("");
-  const [filterSt,     setFilterSt]     = useState("");
-  const [viewTask,     setViewTask]     = useState(null);
-  const [showDownload, setShowDownload] = useState(false);
+  const role    = sessionStorage.getItem("pr_role") || "admin";
+  const isAdmin = role === "admin" || (sessionStorage.getItem("pr_user") || "") === "admin";
+  const currentUser    = sessionStorage.getItem("pr_user")    || "";
+  const currentDisplay = sessionStorage.getItem("pr_display") || currentUser;
+
+  const [tasks,          setTasks]          = useState([]);
+  const [loading,        setLoading]        = useState(true);
+  const [showModal,      setShowModal]      = useState(false);
+  const [editId,         setEditId]         = useState(null);
+  const [form,           setForm]           = useState(makeEmptyForm);
+  const [filterDate,     setFilterDate]     = useState("");
+  const [filterCust,     setFilterCust]     = useState("");
+  const [filterSt,       setFilterSt]       = useState("");
+  const [viewTask,       setViewTask]       = useState(null);
+  const [showDownload,   setShowDownload]   = useState(false);
+  const [pendingDeletes, setPendingDeletes] = useState([]); // [{task_id, task_desc, requested_by, ...}]
+  const [showPending,    setShowPending]    = useState(false);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -120,12 +130,20 @@ export default function DailyTask({ customers }) {
     setLoading(false);
   }, []);
 
+  const loadPendingDeletes = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const data = await apiPendingDeletes();
+      setPendingDeletes(Array.isArray(data) ? data : []);
+    } catch(_) {}
+  }, [isAdmin]);
+
   useEffect(() => {
     migrateLocalStorage().then(() => loadTasks());
-    // Auto-refresh tiap 30 detik agar semua user lihat data terbaru
-    const iv = setInterval(loadTasks, 30000);
+    loadPendingDeletes();
+    const iv = setInterval(() => { loadTasks(); loadPendingDeletes(); }, 30000);
     return () => clearInterval(iv);
-  }, [loadTasks]);
+  }, [loadTasks, loadPendingDeletes]);
 
   /* ── Create / Edit ── */
   const openCreate = () => {
@@ -150,10 +168,31 @@ export default function DailyTask({ customers }) {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this task?")) return;
-    await apiDelete(id);
-    if (viewTask?.id === id) setViewTask(null);
+    const t = tasks.find(t => t.id === id);
+    if (isAdmin) {
+      // Admin langsung hapus
+      if (!window.confirm(`Delete task ${t?.taskNo || id}?`)) return;
+      await apiDelete(id);
+      if (viewTask?.id === id) setViewTask(null);
+      loadTasks();
+      loadPendingDeletes();
+    } else {
+      // Engineer kirim request
+      if (!window.confirm(`Request deletion for task ${t?.taskNo || id}?\nAdmin will need to approve.`)) return;
+      const res = await apiRequestDelete(id, { username: currentUser, display: currentDisplay });
+      if (res.status === "already_requested") {
+        alert("Delete request already sent. Waiting for admin approval.");
+      } else {
+        alert("Delete request sent. Admin will review your request.");
+        logActivity("Request Delete Task", "task", `${t?.description || id} (${t?.taskNo || ""})`);
+      }
+    }
+  };
+
+  const handleApproveDelete = async (taskId, action) => {
+    await apiApproveDelete(taskId, action);
     loadTasks();
+    loadPendingDeletes();
   };
 
   const handleStatusChange = async (id, status) => {
@@ -194,6 +233,19 @@ export default function DailyTask({ customers }) {
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <button onClick={loadTasks} style={{...T.addBtn,background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--muted)"}}>↻</button>
           <button style={{...T.addBtn,background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--muted)"}} onClick={()=>setShowDownload(true)}>📥 Download</button>
+          {isAdmin && pendingDeletes.length > 0 && (
+            <button onClick={()=>setShowPending(true)} style={{
+              ...T.addBtn, background:"rgba(239,68,68,.12)",
+              border:"1px solid rgba(239,68,68,.35)", color:"#F87171",
+              display:"flex", alignItems:"center", gap:6,
+            }}>
+              🗑 Delete Requests
+              <span style={{background:"#EF4444",color:"#fff",fontSize:10,fontWeight:700,
+                padding:"1px 6px",borderRadius:10,lineHeight:1.4}}>
+                {pendingDeletes.length}
+              </span>
+            </button>
+          )}
           <button style={T.addBtn} onClick={openCreate}>+ Create Task</button>
         </div>
       </div>
@@ -277,7 +329,20 @@ export default function DailyTask({ customers }) {
                     <div style={{display:"flex",gap:5}}>
                       <button style={T.editBtn} onClick={()=>openEdit(t)} title="Edit">✏</button>
                       <button style={T.viewBtn} onClick={()=>setViewTask(t)} title="View">👁</button>
-                      <button style={T.delBtn}  onClick={()=>handleDelete(t.id)} title="Delete">✕</button>
+                      {pendingDeletes.some(p => p.task_id === t.id) ? (
+                        <span style={{...T.delBtn,cursor:"default",opacity:.5,fontSize:9,
+                          width:"auto",padding:"0 5px",whiteSpace:"nowrap"}}
+                          title="Waiting for admin approval">⏳ Pending</span>
+                      ) : (
+                        <button
+                          style={{...T.delBtn,
+                            ...(isAdmin ? {} : {background:"rgba(245,158,11,.08)",color:"#FBBF24",border:"1px solid rgba(245,158,11,.2)"})
+                          }}
+                          onClick={()=>handleDelete(t.id)}
+                          title={isAdmin ? "Delete" : "Request Delete"}>
+                          {isAdmin ? "✕" : "🗑"}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -373,6 +438,57 @@ export default function DailyTask({ customers }) {
       )}
 
       {showDownload && <DownloadModal tasks={tasks} onClose={()=>setShowDownload(false)}/>}
+
+      {/* ── Pending Delete Requests Modal (admin only) ── */}
+      {showPending && isAdmin && (
+        <div className="modal-overlay" onClick={()=>setShowPending(false)}>
+          <div className="modal" style={{width:560,maxWidth:"95vw"}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header">
+              <span>🗑 Delete Requests</span>
+              <button className="modal-close" onClick={()=>setShowPending(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{gap:8,padding:"14px 16px"}}>
+              {pendingDeletes.length === 0 ? (
+                <div style={{textAlign:"center",padding:"20px",color:"var(--muted)",fontSize:12,fontStyle:"italic"}}>
+                  No pending delete requests
+                </div>
+              ) : pendingDeletes.map((req, i) => (
+                <div key={req.task_id} style={{
+                  display:"flex",alignItems:"center",gap:12,padding:"10px 12px",
+                  background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,
+                }}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:"var(--text3)"}}>
+                      <span style={{fontFamily:"monospace",color:"#B11226",marginRight:6}}>{req.task_no}</span>
+                      {req.task_desc}
+                    </div>
+                    <div style={{fontSize:10,color:"var(--muted)",marginTop:3}}>
+                      Requested by <strong style={{color:"var(--text4)"}}>{req.requested_by}</strong>
+                      {" · "}{req.requested_at ? new Date(req.requested_at).toLocaleString("id-ID",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : ""}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6,flexShrink:0}}>
+                    <button
+                      onClick={async()=>{ await handleApproveDelete(req.task_id,"approve"); setShowPending(false); }}
+                      style={{background:"rgba(34,197,94,.12)",color:"#4ADE80",border:"1px solid rgba(34,197,94,.3)",
+                        fontFamily:"inherit",fontSize:11,fontWeight:600,padding:"5px 12px",
+                        borderRadius:6,cursor:"pointer"}}>
+                      ✓ Approve
+                    </button>
+                    <button
+                      onClick={async()=>{ await handleApproveDelete(req.task_id,"reject"); loadPendingDeletes(); }}
+                      style={{background:"rgba(239,68,68,.08)",color:"#F87171",border:"1px solid rgba(239,68,68,.2)",
+                        fontFamily:"inherit",fontSize:11,fontWeight:600,padding:"5px 12px",
+                        borderRadius:6,cursor:"pointer"}}>
+                      ✕ Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -609,5 +609,60 @@ def delete_task(task_id):
     return jsonify({"ok": True})
 
 
+# ── Delete approval flow ──────────────────────────────────
+DELETE_REQ_PATH = "/app/shared/logs/delete_requests.json"
+
+def _load_delete_reqs():
+    try:
+        with open(DELETE_REQ_PATH) as f:
+            return _json.load(f)
+    except Exception:
+        return []
+
+def _save_delete_reqs(reqs):
+    os.makedirs(os.path.dirname(DELETE_REQ_PATH), exist_ok=True)
+    with open(DELETE_REQ_PATH, "w") as f:
+        _json.dump(reqs, f, ensure_ascii=False, indent=2)
+
+@app.route("/api/tasks/pending-deletes", methods=["GET"])
+def pending_deletes():
+    return jsonify(_load_delete_reqs())
+
+@app.route("/api/tasks/<task_id>/request-delete", methods=["POST"])
+def request_delete(task_id):
+    data   = request.json or {}
+    tasks  = _load_tasks()
+    task   = next((t for t in tasks if t.get("id") == task_id), None)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    reqs   = _load_delete_reqs()
+    # Avoid duplicate
+    if any(r.get("task_id") == task_id for r in reqs):
+        return jsonify({"ok": True, "status": "already_requested"})
+    reqs.append({
+        "task_id":     task_id,
+        "task_desc":   task.get("description", ""),
+        "task_no":     task.get("taskNo", ""),
+        "requested_by": data.get("display", data.get("username", "unknown")),
+        "username":    data.get("username", "unknown"),
+        "requested_at": datetime.utcnow().isoformat() + "Z",
+    })
+    _save_delete_reqs(reqs)
+    return jsonify({"ok": True, "status": "requested"})
+
+@app.route("/api/tasks/<task_id>/approve-delete", methods=["POST"])
+def approve_delete(task_id):
+    data   = request.json or {}
+    action = data.get("action", "approve")  # "approve" | "reject"
+    reqs   = _load_delete_reqs()
+    new_reqs = [r for r in reqs if r.get("task_id") != task_id]
+    _save_delete_reqs(new_reqs)
+    if action == "approve":
+        tasks = _load_tasks()
+        new   = [t for t in tasks if t.get("id") != task_id]
+        _save_tasks(new)
+    return jsonify({"ok": True, "action": action})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
