@@ -79,7 +79,9 @@ def load_all_into_env():
         _load_from_ssm()
 
     for key, value in _cache.items():
-        if key not in os.environ:          # jangan overwrite yang sudah di-set
+        # Nilai non-kosong di .env boleh menjadi fallback/override eksplisit.
+        # Namun variabel kosong dari template .env tidak boleh memblokir SSM.
+        if not os.environ.get(key):
             os.environ[key] = value
 
     logger.info("SSM: all secrets injected into os.environ")
