@@ -538,7 +538,15 @@ function buildDailyReport(alerts, opts) {
       for (const a of items) {
         const res  = a.resource && a.resource !== "-" ? a.resource : "";
         const time = a.active_at ? ` [${fmtTime(a.active_at)}]` : "";
-        detail += `* ${shortName(a.name)}${res ? " -> " + res : ""}${time}\n`;
+        // Ambil nomor ticket dari TICKET_MAP_KEY jika ada
+        const alertKey = `${a.name}||${a.resource}||${a.active_at}`;
+        let ticketNum = "-";
+        try {
+          const map = JSON.parse(localStorage.getItem("pr_alert_tickets") || "{}");
+          ticketNum = map[alertKey] || "-";
+        } catch {}
+        const ticketStr = ticketNum !== "-" ? ` [${ticketNum}]` : "";
+        detail += `* ${shortName(a.name)}${res ? " -> " + res : ""}${ticketStr}${time}\n`;
       }
     }
     detail += "\n";
@@ -547,39 +555,47 @@ function buildDailyReport(alerts, opts) {
   // ── Ticket Close ──
   let ticketSection = "";
   if (closedTickets && closedTickets.length > 0) {
-    ticketSection = `\n2. Ticket Close\nTotal : ${closedTickets.length}\n\n`;
+    ticketSection = `\n*2. Ticket Close*\nTotal : ${closedTickets.length}\n\n`;
     closedTickets.forEach((t, i) => {
       const ticketNum = (t.detail || "").match(/Ticket:\s*(INC-\S+)/)?.[1] || "-";
       ticketSection += `${i + 1}. ${ticketNum} — ${t.description.replace(/^\[ALERT\]\s*/,"")}\n`;
     });
   } else {
-    ticketSection = `\n2. Ticket Close\nTotal : 0\n- (tidak ada ticket close hari ini)\n`;
+    ticketSection = `\n*2. Ticket Close*\nTotal : 0\n- (tidak ada ticket close shift ini)\n`;
   }
 
-  // ── Daily Backup Status ILCS ──
+  // ── Daily Backup Status ──
   let backupSection = "";
   if (backupStatus) {
-    const { total, success, failed, rate, health } = backupStatus;
+    const { total, success, failed, rate, health, period, generated, fetchedAt } = backupStatus;
     const icon = health === "HEALTHY" ? "🟢" : health === "WARNING" ? "🟡" : health ? "🔴" : "";
-    backupSection = `\n3. Daily Backup Status ILCS\n`;
+    // Tanggal period yang dicek
+    const periodStr = period || (fetchedAt ? new Date(fetchedAt).toISOString().slice(0,10) : "-");
+    // Waktu generate dari log, fallback ke fetchedAt
+    const generatedStr = generated || (fetchedAt
+      ? new Date(fetchedAt).toLocaleString("id-ID", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }) + " WIB"
+      : "-");
+    backupSection = `\n*3. Status Daily Backup*\n`;
+    backupSection += `Periode      : ${periodStr}\n`;
+    backupSection += `Generate     : ${generatedStr}\n`;
     backupSection += `Status       : ${icon} ${health || "-"}\n`;
     backupSection += `Total        : ${total ?? "-"}\n`;
     backupSection += `Success      : ${success ?? "-"}\n`;
     backupSection += `Failed       : ${failed ?? "-"}\n`;
     backupSection += `Success Rate : ${rate ?? "-"}\n`;
   } else {
-    backupSection = `\n3. Daily Backup Status ILCS\n- (data belum tersedia)\n`;
+    backupSection = `\n*3. Status Daily Backup*\n- (data belum tersedia)\n`;
   }
 
   const sep  = "━━━━━━━━━━━━━━━━";
   const sep2 = "━━━━━━━━━━";
-  return `Daily Report | Handover Monitoring standby
+  return `*Daily Report | Handover Monitoring standby*
 ${sep}
 Tanggal  : ${tanggal || "(isi tanggal)"}
 Shift    : ${shiftLabel}
 Engineer : ${engineer || "(isi nama)"}
 ${sep2}
-1. Grafana Alert
+*1. Grafana Alert*
 Total Alert : ${totalAlert}
 
 Detail:
@@ -679,8 +695,10 @@ function DailyReportModal({ alerts, onClose }) {
         const failed  = text.match(/❌ Failed\s*:\s*(\d+)/)?.[1]   || text.match(/Failed\s*:\s*(\d+)/)?.[1];
         const rate    = text.match(/📈 Success Rate\s*:\s*([\d.]+%)/)?.[1] || text.match(/Success Rate\s*:\s*([\d.]+%)/)?.[1];
         const health  = text.match(/\b(HEALTHY|CRITICAL|WARNING)\b/)?.[0];
+        const period    = text.match(/Period\s*:\s*(\d{4}-\d{2}-\d{2})/)?.[1]    || null;
+        const generated = text.match(/Generated\s*:\s*([\d-]+ [\d:]+ WIB)/)?.[1] || null;
         if (total || success || failed) {
-          const parsed = { total, success, failed, rate, health, fetchedAt: new Date().toISOString() };
+          const parsed = { total, success, failed, rate, health, period, generated, fetchedAt: new Date().toISOString() };
           setBackupStatus(parsed);
           try { localStorage.setItem("pr_backup_status_cache", JSON.stringify(parsed)); } catch(_){}
         }

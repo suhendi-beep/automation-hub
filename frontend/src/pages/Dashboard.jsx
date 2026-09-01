@@ -130,12 +130,14 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
     try {
       const d = await fetch("/api/logs/pelindo/daily_ilcs_status").then(r=>r.json());
       const text = (d.logs||[]).join("\n");
-      const total   = text.match(/Total\s+:\s+(\d+)/)?.[1];
-      const success = text.match(/Success\s+:\s+(\d+)/)?.[1];
-      const failed  = text.match(/Failed\s+:\s+(\d+)/)?.[1];
-      const rate    = text.match(/Success Rate\s+:\s+([\d.]+%)/)?.[1];
-      const health  = text.match(/🟢\s*(HEALTHY)|🔴\s*(CRITICAL)|🟡\s*(WARNING)/)?.[0]?.replace(/🟢|🔴|🟡/,"").trim()
-                   || text.match(/\b(HEALTHY|CRITICAL|WARNING)\b/)?.[0];
+      const total     = text.match(/Total\s+:\s+(\d+)/)?.[1];
+      const success   = text.match(/Success\s+:\s+(\d+)/)?.[1];
+      const failed    = text.match(/Failed\s+:\s+(\d+)/)?.[1];
+      const rate      = text.match(/Success Rate\s+:\s+([\d.]+%)/)?.[1];
+      const health    = text.match(/🟢\s*(HEALTHY)|🔴\s*(CRITICAL)|🟡\s*(WARNING)/)?.[0]?.replace(/🟢|🔴|🟡/,"").trim()
+                     || text.match(/\b(HEALTHY|CRITICAL|WARNING)\b/)?.[0];
+      const period    = text.match(/Period\s*:\s*(\d{4}-\d{2}-\d{2})/)?.[1]    || null;
+      const generated = text.match(/Generated\s*:\s*([\d-]+ [\d:]+ WIB)/)?.[1] || null;
       if (total||success||failed) {
         const parsed = {
           total:   total   ? parseInt(total)   : null,
@@ -143,6 +145,8 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
           failed:  failed  ? parseInt(failed)  : null,
           rate:    rate    || null,
           health:  health  || null,
+          period,
+          generated,
           fetchedAt: new Date().toISOString(),
         };
         setDailySummary(p=>({...p, ...parsed}));

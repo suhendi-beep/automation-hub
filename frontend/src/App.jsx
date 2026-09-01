@@ -16,11 +16,9 @@ export default function App() {
     const KEYS_TO_CLEAR = [
       "portal_report_daily_tasks",
       "pr_tasks_migrated",
-      "pr_alert_task_ids",
-      "pr_alert_eskalasi",
-      "pr_alert_tickets",
-      "pr_alert_ticket_cooldown",
       "pr_daily_tasks",
+      // JANGAN hapus: pr_alert_tickets, pr_alert_task_ids, pr_alert_ticket_cooldown
+      // karena masih dipakai untuk tracking nomor ticket alert
     ];
     KEYS_TO_CLEAR.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
   }, []);
