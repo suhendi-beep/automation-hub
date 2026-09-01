@@ -32,3 +32,26 @@ dist/
 # Temp files
 *.log
 *.tmp
+
+# Local customer report artefacts — do not deploy with Portal Report/Pelindo
+/BBI_*
+/Diamond_*
+/NIKP_*
+/Monthly report NIKP_*
+/TD-MINGGUAN-*
+/8. Agustus/
+/1711.mp3
+/ics_bg.png
+/ics_template_bg.png
+/generate_bbi_ics.py
+/generate_diamond_ics.py
+/generate_nikp_ics_v3.py
+/generate_nikp_pptx.py
+/generate_nikp_pptx_ics.py
+/generate_td_weekly_soc.py
+/generate_td_weekly_soc_docx.py
+/inspect_docx.py
+/make_bg.py
+/make_ics_template.py
+/shared/grafana_weekly/
+/h origin main
