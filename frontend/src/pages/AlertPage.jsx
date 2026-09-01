@@ -473,43 +473,12 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan }) {
   );
 }
 
-/* ─── Alert Sound (Bell) ─────────────────────────────── */
+/* ─── Alert Sound ────────────────────────────────────── */
 function playAlertSound() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-    // Bell = fundamental + harmonics dengan exponential decay
-    const bell = (fundamental, startTime, vol = 0.6) => {
-      // Harmonik khas bell: 1x, 2.76x, 5.4x, 8.93x (inharmonic partials)
-      const partials = [
-        { ratio: 1.000, vol: vol       },
-        { ratio: 2.756, vol: vol * 0.6 },
-        { ratio: 5.404, vol: vol * 0.3 },
-        { ratio: 8.933, vol: vol * 0.15 },
-      ];
-      partials.forEach(p => {
-        const osc  = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = "sine";
-        osc.frequency.value = fundamental * p.ratio;
-        // attack sangat cepat, decay eksponensial panjang (suara lonceng)
-        gain.gain.setValueAtTime(0, startTime);
-        gain.gain.linearRampToValueAtTime(p.vol, startTime + 0.005);
-        gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 2.5);
-        osc.start(startTime);
-        osc.stop(startTime + 2.6);
-      });
-    };
-
-    const t = ctx.currentTime;
-    // 3 ketukan bell dengan jeda
-    bell(520, t + 0.0,  0.65);
-    bell(520, t + 1.0,  0.60);
-    bell(520, t + 2.0,  0.55);
-
-    setTimeout(() => ctx.close(), 6000);
+    const audio = new Audio("/alert.mp3");
+    audio.volume = 0.7;
+    audio.play().catch(() => {});
   } catch (e) {
     // browser blocked
   }
