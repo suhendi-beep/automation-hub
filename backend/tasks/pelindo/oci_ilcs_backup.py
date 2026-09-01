@@ -42,8 +42,8 @@ URL_LIST = [
     ("tos-nusantara.ilcs.co.id\nTPK-009-WAS02-sitectx",               _url_vol ("ocid1.volume.oc1.ap-singapore-1.abzwsljrah4pgwoeqbntyz7dbdtlp2zqieprmtuh54abjkikhgwd7l2fuxpq",     _C_T009)),
     ("tos-nusantara.ilcs.co.id\nTPK-009-WAS02-sitelog",               _url_vol ("ocid1.volume.oc1.ap-singapore-1.abzwsljr6nwsnemvi6qatqp7dbgtlemykkxamdghis6lzwy35ogbu47flppa",     _C_T009)),
     ("tos-nusantara.ilcs.co.id\nTPK-009-WAS02-wasarch",               _url_vol ("ocid1.volume.oc1.ap-singapore-1.abzwsljrbfb3jqy3hv55rm7iq5c6xhrz6dnd7olgozd5sy7ug2lptnxqx4yq",     _C_T009)),
-    ("tos-nusantara.ilcs.co.id\npalapareg2 - database",               _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyacoxli746f5tdv6qme7cadm2nlshl7yn3h4zwm4m74yta",
-                                                                                  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyabx7habqlschjvblndlp3h6dhsmonyaqqxcuzs52hghfq", _C_T009)),
+    ("tos-nusantara.ilcs.co.id\ndbtosjkttpk - database",              _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyawkylaqalf6tgyy3zixtfhbmsfswuq3p2lmtdtfafpduq",
+                                                                                  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyafw4kkstuqw7rgngg6cs6xfxjfc2yvojpqv436ujjactq", _C_T009)),
     # ── 11-20: TPM/APPTOS (tos-nusantara.pelindo.co.id) ──────────────────────
     ("tos-nusantara.pelindo.co.id\ntos-memcache (Boot Volume)",        _url_boot("ocid1.bootvolume.oc1.ap-singapore-1.abzwsljr6htai5wsn6nte5e36yl4hrxh632huiqltvxhphngy6ecrhqsnjaa", _C_TPM)),
     ("tos-nusantara.pelindo.co.id\ntosprod-instance-01 (Boot Volume)", _url_boot("ocid1.bootvolume.oc1.ap-singapore-1.abzwsljrlz7g42uxmhddjie6gqdxjqjwsv2o7jbxhtexascw2tczuwlvckja", _C_APPTOS)),
@@ -120,8 +120,8 @@ URL_LIST = [
                                                                                   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyav2ts5za64g73ujvj6lybgfbqysmg3h6ofdxf3v6dytdq", _C_APPTOS)),
     ("Pelindo Hub Stagging\nstagging - Database",                      _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyabz22hpr2jd4y4s25wuq2gbd4senqdtks2bxxtdimrgua",
                                                                                   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyajeqrtpzm5zymbljwia5r2y4v3ocesndcz66tihk2g6uq", _C_APPTOS)),
-    ("tosdbqa\ntosdbqa - Database",                                    _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyao7afm6xvbkytfbapu7qo5uycuzq3oizz4qzkxep4tiqq",
-                                                                                  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcya3ktuld5me43asulgxlkxy4qrrbjgjbusmqoli3ne6m5a", _C_APPTOS)),
+    ("DBTOSQA\nDTOSQA - Database",                                    _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyarmal5rkk3ew3n4zvuxdmfjvonobz5nrc5ppcw3b2on7a",
+                                                                                  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyad4tlxuiagninoqgmydko7m7fovkq4bruuochsh2mwv7q", _C_APPTOS)),
 ]
 
 
@@ -231,13 +231,14 @@ def run(log_path=None, args=None, driver=None):
 
     # Hapus file lama, sisakan 2 terbaru
     try:
-        files = sorted(
+        all_files = sorted(
             [f for f in os.listdir(output_dir) if f.startswith("pelindo_oci_ilcs_") and f.endswith(".docx")],
             reverse=True
         )
-        for old in files[2:]:
-            os.remove(os.path.join(output_dir, old))
-            log(f"Deleted old file: {old}")
+        for old in all_files[2:]:
+            if old != os.path.basename(doc_name):
+                os.remove(os.path.join(output_dir, old))
+                log(f"Deleted old file: {old}")
     except Exception as e:
         log(f"Cleanup warning: {e}")
 

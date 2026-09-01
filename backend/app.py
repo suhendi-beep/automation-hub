@@ -8,6 +8,10 @@ import oci_session
 app = Flask(__name__)
 CORS(app)
 
+# Grafana alerts cache — avoid repeated external calls
+_grafana_cache = {"data": None, "ts": 0}
+_GRAFANA_CACHE_TTL = 30  # detik — refresh tiap 30 detik
+
 REGISTRY = {
     "pelindo": {
         "id": "pelindo", "name": "Pelindo", "platform": "OCI", "status": "active",
@@ -19,6 +23,33 @@ REGISTRY = {
                 "schedule": "Weekly", "output_type": "pptx",
                 "requires_oci_login": False,
                 "args": [
+                    {"key": "start_date", "label": "Start Date", "type": "date"},
+                    {"key": "start_time", "label": "Start Time", "type": "time", "default": "00:00"},
+                    {"key": "end_date",   "label": "End Date",   "type": "date"},
+                    {"key": "end_time",   "label": "End Time",   "type": "time", "default": "23:59"},
+                ],
+            },
+            {
+                "id": "grafana_weekly_report",
+                "name": "Weekly Grafana Report Pelindo",
+                "description": "Screenshot semua dashboard Grafana Pelindo (GCP/OCI/Huawei/Alibaba) per minggu → ZIP",
+                "schedule": "Weekly", "output_type": "zip",
+                "requires_oci_login": False,
+                "args": [
+                    {"key": "week_num",   "label": "Week",       "type": "select", "default": "1",
+                     "options": [{"value":"1","label":"Week 1"},{"value":"2","label":"Week 2"},
+                                 {"value":"3","label":"Week 3"},{"value":"4","label":"Week 4"}]},
+                    {"key": "month_num",  "label": "Month",      "type": "select",
+                     "options": [
+                         {"value":"1","label":"Januari"},{"value":"2","label":"Februari"},
+                         {"value":"3","label":"Maret"},  {"value":"4","label":"April"},
+                         {"value":"5","label":"Mei"},    {"value":"6","label":"Juni"},
+                         {"value":"7","label":"Juli"},   {"value":"8","label":"Agustus"},
+                         {"value":"9","label":"September"},{"value":"10","label":"Oktober"},
+                         {"value":"11","label":"November"},{"value":"12","label":"Desember"},
+                     ], "default": str(datetime.now().month)},
+                    {"key": "year_num",   "label": "Year",       "type": "text",
+                     "default": str(datetime.now().year)},
                     {"key": "start_date", "label": "Start Date", "type": "date"},
                     {"key": "start_time", "label": "Start Time", "type": "time", "default": "00:00"},
                     {"key": "end_date",   "label": "End Date",   "type": "date"},
@@ -52,7 +83,138 @@ REGISTRY = {
             },
         ],
     },
+    "nikp": {
+        "id": "nikp", "name": "NIKP", "platform": "AWS", "status": "active",
+        "automations": [
+            {
+                "id": "nikp_monthly_report",
+                "name": "Monthly Report NIKP",
+                "description": "Generate laporan bulanan NIKP AWS — cost, usage, instance summary → PPTX",
+                "schedule": "Monthly", "output_type": "pptx",
+                "requires_oci_login": False,
+                "args": [
+                    {"key": "month", "label": "Month (YYYY-MM)", "type": "month",
+                     "default": datetime.now().strftime("%Y-%m")},
+                ],
+            },
+        ],
+    },
 }
+
+
+@app.route("/api/grafana/alerts")
+def grafana_alerts():
+    """Ambil semua alert dari dashboard Grafana (semua datasource). Cached 60s."""
+    import urllib.request, base64, json, time
+    from datetime import datetime, timezone
+
+    now_ts = time.time()
+    if _grafana_cache["data"] is not None and (now_ts - _grafana_cache["ts"]) < _GRAFANA_CACHE_TTL:
+        return jsonify(_grafana_cache["data"])
+
+    creds   = base64.b64encode(b"icscompute:icsW4tch!").decode()
+    headers = {"Authorization": f"Basic {creds}", "Accept": "application/json"}
+    now     = datetime.now(timezone.utc)
+    result  = []
+
+    def make_req(url):
+        return urllib.request.Request(url, headers=headers)
+
+    # ── 1. Prometheus datasources (OCI-ILCS, OCI-HO, GCP, Huawei) ──────────
+    PROM_DATASOURCES = [
+        {"folder": "OCI-ILCS", "uid": "bdy31xghxyh34d"},
+        {"folder": "OCI-HO",   "uid": "deyx07ukt7nk0e"},
+        {"folder": "GCP",      "uid": "eey4rwzgb9ibke"},
+        {"folder": "Huawei",   "uid": "eey51w20ssn40e"},
+    ]
+    for ds in PROM_DATASOURCES:
+        url = f"https://monitoring.ilcs.co.id/api/datasources/proxy/uid/{ds['uid']}/api/v1/alerts"
+        try:
+            with urllib.request.urlopen(make_req(url), timeout=10) as r:
+                data = json.load(r)
+            for a in data.get("data", {}).get("alerts", []):
+                if a.get("state") not in ("firing", "pending"):
+                    continue
+                lbl          = a.get("labels", {})
+                active_at    = a.get("activeAt", "")
+                try:
+                    dt           = datetime.fromisoformat(active_at.replace("Z", "+00:00"))
+                    duration_min = (now - dt).total_seconds() / 60
+                except Exception:
+                    duration_min = 0
+                if duration_min < 5:
+                    continue
+                result.append({
+                    "name":         lbl.get("alertname", "Unknown"),
+                    "folder":       ds["folder"],
+                    "resource":     lbl.get("instance") or lbl.get("resourceName") or "-",
+                    "severity":     lbl.get("severity", "-"),
+                    "active_at":    active_at[:19],
+                    "duration_min": round(duration_min),
+                    "state":        a.get("state", "firing"),
+                    "labels":       {k: v for k, v in lbl.items()
+                                     if k not in ("alertname", "severity")
+                                     and not k.startswith("__")},
+                })
+        except Exception:
+            pass
+
+    # ── 2. Grafana native alerts — replicate panel filters dari dashboard ───
+    # Panel "Alert Non Prometheus": grafana_folder tidak mengandung DMDC atau alerts-BTP
+    # Panel "Active Alerts - DMDC": alertname tidak mengandung "DMDCDEV"
+    # Panel "Active Alerts - EIC": semua (tidak ada filter tambahan, tapi folder = alerts-BTP)
+    url_native = "https://monitoring.ilcs.co.id/api/prometheus/grafana/api/v1/alerts"
+    try:
+        with urllib.request.urlopen(make_req(url_native), timeout=15) as r:
+            data = json.load(r)
+        import re
+        for a in data.get("data", {}).get("alerts", []):
+            if a.get("state") not in ("Alerting", "NoData"):
+                continue
+            active_at_str = a.get("activeAt", "")
+            try:
+                dt           = datetime.fromisoformat(active_at_str.replace("Z", "+00:00"))
+                duration_min = (now - dt).total_seconds() / 60
+            except Exception:
+                continue
+            if duration_min < 5:
+                continue
+            lbl    = a.get("labels", {})
+            folder = lbl.get("grafana_folder", "-")
+            aname  = lbl.get("alertname", "")
+
+            # Replicate panel filter logic:
+            # Panel "Alert Non Prometheus": folder bukan DMDC dan bukan alerts-BTP
+            non_prom = (folder not in ("DMDC", "alerts-BTP"))
+            # Panel "Active Alerts - DMDC": folder=DMDC, alertname tidak mengandung "DMDCDEV"
+            dmdc_ok  = (folder == "DMDC" and not re.search(r"DMDCDEV", aname))
+            # Panel "Active Alerts - EIC": folder=alerts-BTP
+            eic_ok   = (folder == "alerts-BTP")
+
+            if not (non_prom or dmdc_ok or eic_ok):
+                continue  # difilter keluar seperti di Grafana
+
+            result.append({
+                "name":         aname or "Unknown",
+                "folder":       folder,
+                "resource":     (lbl.get("resourceName") or lbl.get("hostName") or
+                                 lbl.get("instance") or "-"),
+                "severity":     lbl.get("severity", "-"),
+                "active_at":    active_at_str[:19],
+                "duration_min": round(duration_min),
+                "state":        a.get("state"),
+                "labels":       {k: v for k, v in lbl.items()
+                                 if k not in ("alertname", "grafana_folder", "severity")
+                                 and not k.startswith("__")},
+            })
+    except Exception:
+        pass
+
+    result.sort(key=lambda x: -x["duration_min"])
+    payload = {"alerts": result, "total": len(result)}
+    _grafana_cache["data"] = payload
+    _grafana_cache["ts"]   = now_ts
+    return jsonify(payload)
 
 
 @app.route("/api/ping")
@@ -266,6 +428,178 @@ def oci_login_state(task_id):
 def oci_logout():
     oci_session.delete_cookies()
     return jsonify({"status": "ok"})
+
+
+# ══════════════════════════════════════════════════════════
+#  AUTH — Multi-user with roles
+# ══════════════════════════════════════════════════════════
+USERS = {
+    "admin":         {"password": "ICSsupport2026",  "role": "admin",    "display": "Admin"},
+    "suhendi":       {"password": "m7Kx9pQ3nRvL2wZt", "role": "engineer", "display": "Suhendi"},
+    "Priyanto":      {"password": "bF4hJeU8cYsA6dNp", "role": "engineer", "display": "Priyanto"},
+    "neal.hotama":   {"password": "Tg5zXw1kMrD0qVjH", "role": "engineer", "display": "Neal Hotama"},
+    "nazra.hisyami": {"password": "Wy2nLf6uBsC9eKoP", "role": "engineer", "display": "Nazra Hisyami"},
+}
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    data     = request.json or {}
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+    user     = USERS.get(username)
+    if not user or user["password"] != password:
+        return jsonify({"ok": False, "error": "Invalid username or password"}), 401
+    return jsonify({
+        "ok":      True,
+        "username": username,
+        "display":  user["display"],
+        "role":     user["role"],
+    })
+
+@app.route("/api/auth/users")
+def auth_users():
+    """Return list of users (no passwords) — for admin UI."""
+    return jsonify([
+        {"username": u, "display": v["display"], "role": v["role"]}
+        for u, v in USERS.items()
+    ])
+
+
+# ══════════════════════════════════════════════════════════
+#  ACTIVITY LOG — Store / retrieve engineer activity
+# ══════════════════════════════════════════════════════════
+import json as _json
+
+ACTIVITY_LOG_PATH = "/app/shared/logs/activity_log.json"
+
+def _load_activity():
+    try:
+        with open(ACTIVITY_LOG_PATH) as f:
+            return _json.load(f)
+    except Exception:
+        return []
+
+def _save_activity(logs):
+    os.makedirs(os.path.dirname(ACTIVITY_LOG_PATH), exist_ok=True)
+    with open(ACTIVITY_LOG_PATH, "w") as f:
+        _json.dump(logs, f, ensure_ascii=False, indent=2)
+
+@app.route("/api/activity", methods=["GET"])
+def get_activity():
+    logs    = _load_activity()
+    user    = request.args.get("user", "")
+    date_from = request.args.get("from", "")
+    date_to   = request.args.get("to",   "")
+    if user:
+        logs = [l for l in logs if l.get("username") == user]
+    if date_from:
+        logs = [l for l in logs if l.get("date", "") >= date_from]
+    if date_to:
+        logs = [l for l in logs if l.get("date", "") <= date_to]
+    # newest first
+    logs = sorted(logs, key=lambda x: x.get("ts", ""), reverse=True)
+    return jsonify(logs)
+
+@app.route("/api/activity", methods=["POST"])
+def post_activity():
+    data = request.json or {}
+    logs = _load_activity()
+    entry = {
+        "id":       f"{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}",
+        "ts":       datetime.utcnow().isoformat() + "Z",
+        "date":     datetime.utcnow().strftime("%Y-%m-%d"),
+        "username": data.get("username", "unknown"),
+        "display":  data.get("display",  "Unknown"),
+        "action":   data.get("action",   ""),
+        "category": data.get("category", "general"),
+        "detail":   data.get("detail",   ""),
+    }
+    logs.append(entry)
+    if len(logs) > 5000:
+        logs = logs[-5000:]
+    _save_activity(logs)
+    return jsonify({"ok": True, "id": entry["id"]})
+
+
+# ══════════════════════════════════════════════════════════
+#  DAILY TASKS — Shared across all users
+# ══════════════════════════════════════════════════════════
+TASKS_PATH = "/app/shared/logs/daily_tasks.json"
+
+def _load_tasks():
+    try:
+        with open(TASKS_PATH) as f:
+            return _json.load(f)
+    except Exception:
+        return []
+
+def _save_tasks(tasks):
+    os.makedirs(os.path.dirname(TASKS_PATH), exist_ok=True)
+    with open(TASKS_PATH, "w") as f:
+        _json.dump(tasks, f, ensure_ascii=False, indent=2)
+
+@app.route("/api/tasks", methods=["GET"])
+def get_tasks():
+    tasks = _load_tasks()
+    # optional filters
+    date_filter = request.args.get("date", "")
+    if date_filter:
+        tasks = [t for t in tasks if (t.get("date","") or "").startswith(date_filter)]
+    return jsonify(tasks)
+
+@app.route("/api/tasks", methods=["POST"])
+def create_task():
+    data  = request.json or {}
+    tasks = _load_tasks()
+    # auto taskNo
+    max_no = 0
+    for t in tasks:
+        try:
+            n = int((t.get("taskNo","TSK-000")).replace("TSK-",""))
+            if n > max_no: max_no = n
+        except: pass
+    task_no = f"TSK-{str(max_no+1).padStart if False else str(max_no+1).zfill(3)}"
+    task_no = f"TSK-{str(max_no+1).zfill(3)}"
+    new_task = {
+        "id":          data.get("id") or f"task_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}",
+        "taskNo":      data.get("taskNo") or task_no,
+        "customer":    data.get("customer", ""),
+        "description": data.get("description", ""),
+        "date":        data.get("date", ""),
+        "start":       data.get("start", ""),
+        "end":         data.get("end", ""),
+        "pic":         data.get("pic", ""),
+        "status":      data.get("status", "In Progress"),
+        "detail":      data.get("detail", ""),
+        "createdAt":   data.get("createdAt") or datetime.utcnow().isoformat() + "Z",
+    }
+    tasks.insert(0, new_task)
+    _save_tasks(tasks)
+    return jsonify(new_task), 201
+
+@app.route("/api/tasks/<task_id>", methods=["PUT"])
+def update_task(task_id):
+    data  = request.json or {}
+    tasks = _load_tasks()
+    updated = None
+    for i, t in enumerate(tasks):
+        if t.get("id") == task_id:
+            tasks[i] = {**t, **data, "id": task_id}
+            updated  = tasks[i]
+            break
+    if not updated:
+        return jsonify({"error": "Task not found"}), 404
+    _save_tasks(tasks)
+    return jsonify(updated)
+
+@app.route("/api/tasks/<task_id>", methods=["DELETE"])
+def delete_task(task_id):
+    tasks = _load_tasks()
+    new   = [t for t in tasks if t.get("id") != task_id]
+    if len(new) == len(tasks):
+        return jsonify({"error": "Task not found"}), 404
+    _save_tasks(new)
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

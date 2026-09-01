@@ -448,3 +448,112 @@ def run_oci_login_with_otp(self, tenancy, username, password):
         except Exception:
             pass
         return {"status": "error", "error": tb}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SCHEDULED TASKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@celery.task(bind=True, name="celery_worker.scheduled_daily_ilcs")
+def scheduled_daily_ilcs(self):
+    """Jalankan Daily Backup Status ILCS lalu kirim hasil ke email."""
+    from datetime import datetime
+    log_path = "/app/shared/logs/pelindo_daily_ilcs_status.log"
+    _log(log_path, f"=== SCHEDULED START: daily_ilcs_status | task={self.request.id} ===")
+
+    try:
+        from tasks.pelindo.daily_ilcs_status import run as daily_run
+        result = daily_run(log_path=log_path)
+        _log(log_path, f"=== RUN DONE: {result} ===")
+    except Exception:
+        tb = traceback.format_exc()
+        _log(log_path, f"ERROR running daily_ilcs_status:\n{tb}")
+        result = f"ERROR: {tb[:200]}"
+
+    # Baca isi log untuk dijadikan body email
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        # Ambil bagian summary saja (dari baris "=== START" terakhir)
+        start_idx = 0
+        for i, l in enumerate(lines):
+            if "SCHEDULED START" in l or "=== START" in l:
+                start_idx = i
+        body = "".join(lines[start_idx:])[-4000:]  # max 4000 char
+    except Exception:
+        body = f"Result: {result}"
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    subject = f"[Daily Backup] Status ILCS & Pelindo — {today}"
+
+    from email_helper import send_report_email
+    ok = send_report_email(
+        to=EMAIL_TO,
+        subject=subject,
+        body=body,
+        log=lambda m: _log(log_path, m),
+    )
+    status = "Email sent" if ok else "Email FAILED"
+    _log(log_path, f"=== SCHEDULED DONE: {status} ===")
+    return {"status": "success", "email": status}
+
+
+@celery.task(bind=True, name="celery_worker.scheduled_grafana_ho")
+def scheduled_grafana_ho(self):
+    """Jalankan Weekly Capture Grafana HO lalu kirim file PPTX ke email."""
+    from datetime import datetime, timedelta
+    log_path = "/app/shared/logs/pelindo_grafana_capture.log"
+    _log(log_path, f"=== SCHEDULED START: grafana_capture | task={self.request.id} ===")
+
+    # Default: capture 7 hari terakhir
+    today     = datetime.now()
+    week_ago  = today - timedelta(days=7)
+    args = {
+        "start_date": week_ago.strftime("%Y-%m-%d"),
+        "start_time": "00:00",
+        "end_date":   today.strftime("%Y-%m-%d"),
+        "end_time":   "23:59",
+    }
+
+    output_file = None
+    try:
+        from tasks.pelindo.grafana_capture import run as grafana_run
+        result = grafana_run(log_path=log_path, args=args)
+        _log(log_path, f"=== RUN DONE: {result} ===")
+
+        # Cari file PPTX yang baru dibuat
+        import glob, os
+        files = sorted(
+            glob.glob("/app/shared/reports/pelindo_grafana_*.pptx"),
+            key=os.path.getmtime, reverse=True
+        )
+        if files:
+            output_file = files[0]
+            _log(log_path, f"Attachment: {output_file}")
+    except Exception:
+        tb = traceback.format_exc()
+        _log(log_path, f"ERROR running grafana_capture:\n{tb}")
+        result = f"ERROR: {tb[:200]}"
+
+    # Email
+    period  = f"{args['start_date']} s/d {args['end_date']}"
+    subject = f"[Weekly Report] Grafana HO — {period}"
+    body = (
+        f"Grafana HO Weekly Report\n"
+        f"Period  : {period}\n"
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB\n\n"
+        f"Laporan PPTX terlampir.\n\n"
+        f"-- Portal Report · ICS Compute --"
+    )
+
+    from email_helper import send_report_email
+    ok = send_report_email(
+        to=EMAIL_TO,
+        subject=subject,
+        body=body,
+        attachments=[output_file] if output_file else [],
+        log=lambda m: _log(log_path, m),
+    )
+    status = "Email sent" if ok else "Email FAILED"
+    _log(log_path, f"=== SCHEDULED DONE: {status} ===")
+    return {"status": "success", "email": status}

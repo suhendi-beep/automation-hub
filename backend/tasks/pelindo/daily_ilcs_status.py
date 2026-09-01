@@ -29,6 +29,7 @@ VOLUMES_ILCS = [
     ("TPK-009-WAS02 (Boot Volume)",     "boot",  "ocid1.bootvolume.oc1.ap-singapore-1.abzwsljrmwoz3sj5o54mv2g5qx5lpn2dcc6xtmxpp5xn4cchy76ikjgnf3oq",  COMP_T009_PROD),
     ("TPK-009-WAS02-sitectx",           "block", "ocid1.volume.oc1.ap-singapore-1.abzwsljrah4pgwoeqbntyz7dbdtlp2zqieprmtuh54abjkikhgwd7l2fuxpq",      COMP_T009_PROD),
     ("TPK-009-WAS02-sitelog",           "block", "ocid1.volume.oc1.ap-singapore-1.abzwsljr6nwsnemvi6qatqp7dbgtlemykkxamdghis6lzwy35ogbu47flppa",      COMP_T009_PROD),
+    ("TPK-009-WAS02-wasarch",           "block", "ocid1.volume.oc1.ap-singapore-1.abzwsljrbfb3jqy3hv55rm7iq5c6xhrz6dnd7olgozd5sy7ug2lptnxqx4yq",      COMP_T009_PROD),
     ("tos-memcache (Boot Volume)",      "boot",  "ocid1.bootvolume.oc1.ap-singapore-1.abzwsljr6htai5wsn6nte5e36yl4hrxh632huiqltvxhphngy6ecrhqsnjaa",  COMP_TPM_PROD),
     ("tosprod-instance-01 (Boot Volume)","boot", "ocid1.bootvolume.oc1.ap-singapore-1.abzwsljrlz7g42uxmhddjie6gqdxjqjwsv2o7jbxhtexascw2tczuwlvckja",  COMP_APPTOS),
     ("tos1_sitectx",                    "block", "ocid1.volume.oc1.ap-singapore-1.abzwsljrls3r6q63xd2q24rxhdaliov2ew42spor2hngpbz4lzhemn2pdsta",      COMP_APPTOS),
@@ -60,7 +61,7 @@ VOLUMES_ILCS = [
 
 DATABASES_ILCS = [
     ("DBTOSBLW",  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyayhb45sjeieethxvd5ukuqij4btl5w62h2pb2pbkbmnla"),
-    ("palapar2",  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyabx7habqlschjvblndlp3h6dhsmonyaqqxcuzs52hghfq"),
+    ("dbtosjkttpk", "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyafw4kkstuqw7rgngg6cs6xfxjfc2yvojpqv436ujjactq"),
     ("DBTOSTPM",  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyamlf3xp6ttrzc4wegunsfisyvzkia5avjx3tqpdqmdbpa"),
     ("DBTOSTBR",  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyauklgsn7f62xihvmuz5xzq32fhnj3r5v5tb32hqvdccpa"),
     ("prayar2",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyanbf7wu7rji4klgfo2hk6qsf5emrcuai5m42af2ophpnq"),
@@ -82,7 +83,7 @@ DATABASES_ILCS = [
     ("dtosdev",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyans2x7fc7ecq72o3we332spvcgfvho7h5cp63vhrh4kzq"),
     ("dbrepo",    "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyav2ts5za64g73ujvj6lybgfbqysmg3h6ofdxf3v6dytdq"),
     ("dbstag",    "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyajeqrtpzm5zymbljwia5r2y4v3ocesndcz66tihk2g6uq"),
-    ("tosdbqa",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcya3ktuld5me43asulgxlkxy4qrrbjgjbusmqoli3ne6m5a"),
+    ("DBTOSQA",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyad4tlxuiagninoqgmydko7m7fovkq4bruuochsh2mwv7q"),
 ]
 
 DATABASES_PELINDO = [
@@ -238,12 +239,12 @@ def run(log_path=None, args=None):
         status_icon    = "🟢"
         overall_status = "HEALTHY"
 
-    sep = "──────────────────────────────────────────────"
+    sep = "──────────────────────────────"
 
     summary  = "\n"
-    summary += "=" * 58 + "\n"
+    summary += "=" * 40 + "\n"
     summary += "DAILY BACKUP REPORT SUMMARY\n"
-    summary += "=" * 58 + "\n"
+    summary += "=" * 40 + "\n"
     summary += f"Period    : {target_date}\n"
     summary += f"Generated : {generated_str}\n\n"
 

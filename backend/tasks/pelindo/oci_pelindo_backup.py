@@ -135,13 +135,14 @@ def run(log_path=None, args=None, driver=None):
 
     # Hapus file lama, sisakan 2 terbaru
     try:
-        files = sorted(
+        all_files = sorted(
             [f for f in os.listdir(output_dir) if f.startswith("pelindo_oci_pelindo_") and f.endswith(".docx")],
             reverse=True
         )
-        for old in files[2:]:
-            os.remove(os.path.join(output_dir, old))
-            log(f"Deleted old file: {old}")
+        for old in all_files[2:]:
+            if old != os.path.basename(doc_name):
+                os.remove(os.path.join(output_dir, old))
+                log(f"Deleted old file: {old}")
     except Exception as e:
         log(f"Cleanup warning: {e}")
 
