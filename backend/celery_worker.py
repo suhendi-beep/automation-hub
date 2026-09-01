@@ -2,7 +2,14 @@ import os, importlib, traceback
 from datetime import datetime
 from celery import Celery
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+# ── Load secrets dari AWS SSM Parameter Store (fallback ke env var) ──
+try:
+    from ssm_config import load_all_into_env
+    load_all_into_env()
+except Exception:
+    pass  # SSM tidak tersedia — lanjut pakai env var biasa
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://172.19.10.143:6379/8")
 celery = Celery("automation_hub", broker=REDIS_URL, backend=REDIS_URL)
 celery.conf.update(
     task_serializer="json", result_serializer="json",

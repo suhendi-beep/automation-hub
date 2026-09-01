@@ -1,15 +1,4 @@
-version: "3.9"
-
 services:
-  redis:
-    image: redis:7-alpine
-    restart: always
-    networks: [hub-net]
-    deploy:
-      resources:
-        limits:
-          cpus: "0.2"
-          memory: 128M
 
   backend:
     build: ./backend
@@ -21,21 +10,20 @@ services:
     env_file: .env
     environment:
       - PYTHONPATH=/app
-      - REDIS_URL=redis://redis:6379/0
-    depends_on: [redis]
+      - REDIS_URL=redis://172.19.10.143:6379/8
     networks: [hub-net]
     deploy:
       resources:
         limits:
-          cpus: "0.5"
-          memory: 512M
+          cpus: "0.4"
+          memory: 384M
         reservations:
-          cpus: "0.1"
-          memory: 128M
+          cpus: "0.05"
+          memory: 96M
 
   worker:
     build: ./backend
-    command: celery -A celery_worker.celery worker --loglevel=info --concurrency=2
+    command: celery -A celery_worker.celery worker --loglevel=info --concurrency=1
     restart: always
     volumes:
       - ./shared:/app/shared
@@ -43,17 +31,16 @@ services:
     env_file: .env
     environment:
       - PYTHONPATH=/app
-      - REDIS_URL=redis://redis:6379/0
-    depends_on: [redis]
+      - REDIS_URL=redis://172.19.10.143:6379/8
     networks: [hub-net]
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: 1G
+          cpus: "0.6"
+          memory: 512M
         reservations:
-          cpus: "0.2"
-          memory: 256M
+          cpus: "0.05"
+          memory: 128M
 
   frontend:
     build: ./frontend
@@ -64,11 +51,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.3"
-          memory: 256M
+          cpus: "0.2"
+          memory: 128M
         reservations:
-          cpus: "0.1"
-          memory: 64M
+          cpus: "0.02"
+          memory: 32M
 
 networks:
   hub-net:

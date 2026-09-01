@@ -5,6 +5,13 @@ import os, glob
 from datetime import datetime
 import oci_session
 
+# ── Load secrets dari AWS SSM Parameter Store (fallback ke env var) ──
+try:
+    from ssm_config import load_all_into_env
+    load_all_into_env()
+except Exception:
+    pass  # SSM tidak tersedia — lanjut pakai env var biasa
+
 app = Flask(__name__)
 CORS(app)
 
