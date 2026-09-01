@@ -309,7 +309,7 @@ export default function DailyTask({ customers }) {
                   <label className="form-label">PIC (Person In Charge)</label>
                   <select className="form-input" value={form.pic} onChange={e=>setForm(p=>({...p,pic:e.target.value}))}>
                     <option value="">— Select —</option>
-                    {["Admin","Suhendi","Priyanto","Neal Hotama","Nazra Hisyami"].map(n=><option key={n} value={n}>{n}</option>)}
+                    {["Admin","Suhendi","Priyanto","Neal Hotama","Nazran Hisyami"].map(n=><option key={n} value={n}>{n}</option>)}
                   </select>
                 </div>
               </div>

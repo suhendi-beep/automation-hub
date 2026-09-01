@@ -220,7 +220,7 @@ Login dengan salah satu user:
 | suhendi | m7Kx9pQ3nRvL2wZt | Engineer |
 | Priyanto | bF4hJeU8cYsA6dNp | Engineer |
 | neal.hotama | Tg5zXw1kMrD0qVjH | Engineer |
-| nazra.hisyami | Wy2nLf6uBsC9eKoP | Engineer |
+| nazran.hisyami | Wy2nLf6uBsC9eKoP | Engineer |
 
 ---
 

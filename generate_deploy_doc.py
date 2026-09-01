@@ -1,280 +1,578 @@
+"""
+generate_deploy_doc.py
+Membuat file DEPLOY_UPDATE_GUIDE.docx — panduan step-by-step
+update Portal Report dari login AWS sampai selesai deploy.
+"""
 from docx import Document
-from docx.shared import Pt, RGBColor, Inches
+from docx.shared import Pt, RGBColor, Cm, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import copy
+
+# ── Warna ─────────────────────────────────────────────────
+RED    = RGBColor(0xB1, 0x12, 0x26)
+DARK   = RGBColor(0x1A, 0x1A, 0x1A)
+GRAY   = RGBColor(0x50, 0x50, 0x50)
+WHITE  = RGBColor(0xFF, 0xFF, 0xFF)
+LBLUE  = RGBColor(0xE8, 0xF0, 0xFE)
+LRED   = RGBColor(0xFF, 0xF0, 0xF0)
+LGREEN = RGBColor(0xF0, 0xFF, 0xF4)
+LYEL   = RGBColor(0xFF, 0xFD, 0xEA)
+LCYAN  = RGBColor(0xE8, 0xF8, 0xFF)
 
 doc = Document()
 
-section = doc.sections[0]
-section.left_margin = section.right_margin = Inches(1)
-section.top_margin  = section.bottom_margin = Inches(1)
+# ── Page margins ──────────────────────────────────────────
+for section in doc.sections:
+    section.top_margin    = Cm(2)
+    section.bottom_margin = Cm(2)
+    section.left_margin   = Cm(2.5)
+    section.right_margin  = Cm(2.5)
 
-def add_heading(text, level=1, color=(204,0,0)):
-    p = doc.add_heading(text, level=level)
-    for run in p.runs:
-        run.font.color.rgb = RGBColor(*color)
+# ── Default font ─────────────────────────────────────────
+style = doc.styles['Normal']
+style.font.name = 'Calibri'
+style.font.size = Pt(10.5)
+
+# ── Helper functions ──────────────────────────────────────
+def set_cell_bg(cell, hex_color):
+    tc   = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd  = OxmlElement('w:shd')
+    shd.set(qn('w:val'),   'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'),  hex_color)
+    tcPr.append(shd)
+
+def h1(text):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run(text)
+    r.font.size  = Pt(20)
+    r.font.bold  = True
+    r.font.color.rgb = RED
+    r.font.name  = 'Calibri'
     return p
 
-def add_para(text="", bold=False, indent=False):
+def h2(text):
     p = doc.add_paragraph()
-    if indent:
-        p.paragraph_format.left_indent = Inches(0.3)
-    run = p.add_run(text)
-    run.bold = bold
-    run.font.size = Pt(11)
+    r = p.add_run(text)
+    r.font.size  = Pt(14)
+    r.font.bold  = True
+    r.font.color.rgb = RED
+    r.font.name  = 'Calibri'
+    p.paragraph_format.space_before = Pt(14)
+    p.paragraph_format.space_after  = Pt(4)
     return p
 
-def add_code(text):
+def h3(text):
     p = doc.add_paragraph()
-    p.paragraph_format.left_indent = Inches(0.3)
-    run = p.add_run(text)
-    run.font.name = "Courier New"
-    run.font.size = Pt(9)
-    run.font.color.rgb = RGBColor(0, 100, 0)
-    shading = OxmlElement("w:shd")
-    shading.set(qn("w:fill"), "F0F0F0")
-    shading.set(qn("w:val"), "clear")
-    p._p.get_or_add_pPr().append(shading)
+    r = p.add_run(text)
+    r.font.size  = Pt(11.5)
+    r.font.bold  = True
+    r.font.color.rgb = DARK
+    r.font.name  = 'Calibri'
+    p.paragraph_format.space_before = Pt(10)
+    p.paragraph_format.space_after  = Pt(2)
+    return p
 
-def add_table(headers, rows):
-    table = doc.add_table(rows=1+len(rows), cols=len(headers))
-    table.style = "Table Grid"
-    hdr = table.rows[0].cells
-    for i, h in enumerate(headers):
-        hdr[i].text = h
-        for run in hdr[i].paragraphs[0].runs:
-            run.bold = True
-            run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(255,255,255)
-        shading = OxmlElement("w:shd")
-        shading.set(qn("w:fill"), "CC0000")
-        shading.set(qn("w:val"), "clear")
-        hdr[i]._tc.get_or_add_tcPr().append(shading)
-    for r_idx, row in enumerate(rows):
-        cells = table.rows[r_idx+1].cells
-        for c_idx, val in enumerate(row):
-            cells[c_idx].text = val
-            cells[c_idx].paragraphs[0].runs[0].font.size = Pt(10)
+def body(text, bold=False, color=None):
+    p = doc.add_paragraph()
+    r = p.add_run(text)
+    r.font.size = Pt(10.5)
+    r.font.bold = bold
+    r.font.name = 'Calibri'
+    if color:
+        r.font.color.rgb = color
+    p.paragraph_format.space_after = Pt(3)
+    return p
+
+def note(text, bg='E8F0FE', emoji='ℹ️'):
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.style = 'Table Grid'
+    cell = tbl.cell(0, 0)
+    set_cell_bg(cell, bg)
+    p = cell.paragraphs[0]
+    r = p.add_run(f'{emoji}  {text}')
+    r.font.size = Pt(10)
+    r.font.name = 'Calibri'
+    p.paragraph_format.space_before = Pt(3)
+    p.paragraph_format.space_after  = Pt(3)
     doc.add_paragraph()
 
-# COVER
+def code(text):
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.style = 'Table Grid'
+    cell = tbl.cell(0, 0)
+    set_cell_bg(cell, '1E1E1E')
+    p = cell.paragraphs[0]
+    for line in text.strip().split('\n'):
+        if p.runs:
+            p.add_run('\n')
+        r = p.add_run(line)
+        r.font.name  = 'Courier New'
+        r.font.size  = Pt(9)
+        r.font.color.rgb = RGBColor(0xA8, 0xFF, 0xB0)
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after  = Pt(4)
+    doc.add_paragraph()
+
+def step_box(num, title, desc):
+    tbl = doc.add_table(rows=1, cols=2)
+    tbl.style = 'Table Grid'
+    # number cell
+    c0 = tbl.cell(0, 0)
+    c0.width = Cm(1.5)
+    set_cell_bg(c0, 'B11226')
+    p0 = c0.paragraphs[0]
+    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r0 = p0.add_run(str(num))
+    r0.font.size  = Pt(18)
+    r0.font.bold  = True
+    r0.font.color.rgb = WHITE
+    r0.font.name  = 'Calibri'
+    # content cell
+    c1 = tbl.cell(0, 1)
+    set_cell_bg(c1, 'F9F9F9')
+    p1 = c1.paragraphs[0]
+    rt = p1.add_run(title + '\n')
+    rt.font.size  = Pt(11)
+    rt.font.bold  = True
+    rt.font.name  = 'Calibri'
+    rt.font.color.rgb = DARK
+    rd = p1.add_run(desc)
+    rd.font.size  = Pt(10)
+    rd.font.name  = 'Calibri'
+    rd.font.color.rgb = GRAY
+    doc.add_paragraph()
+
+def user_table():
+    tbl = doc.add_table(rows=6, cols=3)
+    tbl.style = 'Table Grid'
+    headers = ['Username', 'Password', 'Role']
+    for i, h in enumerate(headers):
+        c = tbl.cell(0, i)
+        set_cell_bg(c, 'B11226')
+        p = c.paragraphs[0]
+        r = p.add_run(h)
+        r.font.bold  = True
+        r.font.color.rgb = WHITE
+        r.font.name  = 'Calibri'
+        r.font.size  = Pt(10)
+        p.alignment  = WD_ALIGN_PARAGRAPH.CENTER
+    rows = [
+        ('admin',         'ICSsupport2026',   'Admin'),
+        ('suhendi',       'm7Kx9pQ3nRvL2wZt', 'Engineer'),
+        ('Priyanto',      'bF4hJeU8cYsA6dNp', 'Engineer'),
+        ('neal.hotama',   'Tg5zXw1kMrD0qVjH', 'Engineer'),
+        ('nazran.hisyami', 'Wy2nLf6uBsC9eKoP', 'Engineer'),
+    ]
+    for ri, row in enumerate(rows):
+        bg = 'FFFFFF' if ri % 2 == 0 else 'F5F5F5'
+        for ci, val in enumerate(row):
+            c = tbl.cell(ri+1, ci)
+            set_cell_bg(c, bg)
+            p = c.paragraphs[0]
+            r = p.add_run(val)
+            r.font.name = 'Courier New' if ci < 2 else 'Calibri'
+            r.font.size = Pt(9.5)
+            if ci == 2:
+                r.font.color.rgb = RED if val == 'Admin' else GRAY
+    doc.add_paragraph()
+
+def resource_table():
+    tbl = doc.add_table(rows=4, cols=3)
+    tbl.style = 'Table Grid'
+    headers = ['Service', 'CPU Limit', 'Memory Limit']
+    for i, h in enumerate(headers):
+        c = tbl.cell(0, i)
+        set_cell_bg(c, '363636')
+        p = c.paragraphs[0]
+        r = p.add_run(h)
+        r.font.bold  = True
+        r.font.color.rgb = WHITE
+        r.font.name  = 'Calibri'
+        r.font.size  = Pt(10)
+        p.alignment  = WD_ALIGN_PARAGRAPH.CENTER
+    rows = [
+        ('backend',  '0.4 core', '384 MB'),
+        ('worker',   '0.6 core', '512 MB'),
+        ('frontend', '0.2 core', '128 MB'),
+    ]
+    for ri, row in enumerate(rows):
+        for ci, val in enumerate(row):
+            c = tbl.cell(ri+1, ci)
+            set_cell_bg(c, 'F9F9F9')
+            p = c.paragraphs[0]
+            r = p.add_run(val)
+            r.font.name = 'Calibri'
+            r.font.size = Pt(10)
+    doc.add_paragraph()
+
+# ══════════════════════════════════════════════════════════
+#  COVER
+# ══════════════════════════════════════════════════════════
+doc.add_paragraph()
+h1("PORTAL REPORT")
 p = doc.add_paragraph()
 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-run = p.add_run("PANDUAN DEPLOY PORTALREPORT KE AWS EC2")
-run.bold = True; run.font.size = Pt(20); run.font.color.rgb = RGBColor(204,0,0)
+r = p.add_run("Panduan Update & Deploy")
+r.font.size  = Pt(14)
+r.font.color.rgb = GRAY
+r.font.name  = 'Calibri'
+
 p2 = doc.add_paragraph()
 p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-r2 = p2.add_run("Menggunakan AWS Console (Tanpa SSH dari Komputer Lokal)")
-r2.font.size = Pt(12); r2.font.color.rgb = RGBColor(100,100,100)
+r2 = p2.add_run("ICS Compute · September 2026")
+r2.font.size  = Pt(10)
+r2.font.color.rgb = GRAY
+r2.font.name  = 'Calibri'
+
 doc.add_paragraph()
-p3 = doc.add_paragraph()
-p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-r3 = p3.add_run("ICS Compute  |  Juli 2026")
-r3.font.size = Pt(11); r3.font.color.rgb = RGBColor(150,150,150)
-doc.add_page_break()
+note(
+    "Dokumen ini mencakup step-by-step update Portal Report dari awal (login AWS) "
+    "sampai aplikasi berjalan di server production. "
+    "Ini adalah UPDATE dari aplikasi yang sudah berjalan, BUKAN deploy dari nol.",
+    bg='FFF8E1', emoji='📌'
+)
 
-# PERSIAPAN
-add_heading("Persiapan Sebelum Mulai")
-add_para("Pastikan kamu memiliki hal-hal berikut:")
-for item in [
-    "Akses ke AWS Console (akun login)",
-    "File aplikasi PortalReport sudah ter-compress (.tar.gz) — lihat Langkah 5",
-    "Koneksi internet stabil",
-    "Browser (Chrome/Firefox)",
-]:
-    add_para("✔  " + item, indent=True)
+# ══════════════════════════════════════════════════════════
+#  RINGKASAN PERUBAHAN
+# ══════════════════════════════════════════════════════════
+h2("📋  Ringkasan Perubahan")
+
+tbl = doc.add_table(rows=5, cols=2)
+tbl.style = 'Table Grid'
+changes = [
+    ('Redis',          'Pindah dari Redis lokal → Redis eksternal 172.19.10.143:6379 channel 8'),
+    ('Secrets',        'Dipindah dari file .env → AWS SSM Parameter Store (terenkripsi)'),
+    ('Resource Limits','Semua container dikurangi CPU/memory agar tidak spike'),
+    ('Fitur Baru',     'Multi-user login, Engineer Activity, Daily Task shared (server-side), notifikasi reminder, alert detail lengkap'),
+]
+for i, (k, v) in enumerate(changes):
+    c0 = tbl.cell(i, 0)
+    c1 = tbl.cell(i, 1)
+    set_cell_bg(c0, 'B11226')
+    set_cell_bg(c1, 'FFFFFF' if i % 2 == 0 else 'F9F9F9')
+    r0 = c0.paragraphs[0].add_run(k)
+    r0.font.bold = True; r0.font.color.rgb = WHITE; r0.font.name = 'Calibri'; r0.font.size = Pt(10)
+    r1 = c1.paragraphs[0].add_run(v)
+    r1.font.name = 'Calibri'; r1.font.size = Pt(10)
 doc.add_paragraph()
 
-# BAGIAN 1
-add_heading("Bagian 1 — Buat EC2 Instance di AWS")
+# ══════════════════════════════════════════════════════════
+#  PRASYARAT
+# ══════════════════════════════════════════════════════════
+h2("✅  Prasyarat")
+items = [
+    "Akses SSH ke server production",
+    "AWS CLI terinstall di mesin lokal",
+    "Akun AWS dengan hak akses SSM PutParameter",
+    "Server production memiliki IAM Role dengan policy AmazonSSMReadOnlyAccess (jika EC2)",
+    "Redis eksternal 172.19.10.143:6379 sudah bisa diakses dari server",
+]
+for item in items:
+    p = doc.add_paragraph(style='List Bullet')
+    r = p.add_run(item)
+    r.font.name = 'Calibri'
+    r.font.size = Pt(10.5)
 
-add_heading("Langkah 1: Login ke AWS Console", 2, (0,0,0))
-add_para("1. Buka browser, pergi ke: https://console.aws.amazon.com")
-add_para("2. Login dengan akun AWS kamu")
+doc.add_paragraph()
 
-add_heading("Langkah 2: Buka Halaman EC2", 2, (0,0,0))
-add_para("1. Di kolom pencarian atas, ketik EC2")
-add_para("2. Klik EC2 yang muncul di hasil pencarian")
+# ══════════════════════════════════════════════════════════
+#  BAGIAN A — DI MESIN LOKAL
+# ══════════════════════════════════════════════════════════
+h2("🖥️  BAGIAN A — Di Mesin Lokal")
+note("Lakukan bagian ini di laptop/PC Anda sebelum menyentuh server.", bg='E8F0FE', emoji='💻')
 
-add_heading("Langkah 3: Buat Instance Baru", 2, (0,0,0))
-add_para("1. Klik tombol Launch Instance (warna oranye)")
-add_para("2. Isi konfigurasi berikut:")
-add_table(["Field","Isi"],[
-    ["Name","portalreport"],
-    ["AMI (Sistem Operasi)","Ubuntu Server 22.04 LTS"],
-    ["Instance Type","t3.small (2 vCPU, 2GB RAM)  ← Paling hemat"],
-    ["Storage","15 GB (gp3)"],
-])
-add_para("💡 Tips hemat: STOP instance setelah selesai dipakai, START lagi saat perlu.")
-add_para("   Biaya hanya dihitung saat instance dalam status Running.", indent=True)
-add_para("   Estimasi pemakaian 2 jam/minggu = ± $2/bulan total.", indent=True)
+h3("A1. Login AWS CLI")
+body("Buka terminal, jalankan perintah berikut:")
+code("aws configure")
+body("Isi informasi yang diminta:")
+code(
+    "AWS Access Key ID     : AKIA... (isi access key)\n"
+    "AWS Secret Access Key : xxxxxxxx (isi secret key)\n"
+    "Default region name   : ap-southeast-1\n"
+    "Default output format : json"
+)
+body("Verifikasi login berhasil:")
+code("aws sts get-caller-identity")
+body("Expected output (tampil informasi akun Anda):")
+code('{\n    "Account": "038361715485",\n    "Arn": "arn:aws:iam::..."\n}')
 
-add_heading("Langkah 4: Key Pair — Pilih Proceed Without", 2, (0,0,0))
-add_para("Karena kita akan masuk lewat AWS Console langsung (bukan SSH dari terminal),")
-add_para("pada bagian Key pair pilih: Proceed without a key pair")
-add_para("Catatan: Opsi ini aman karena kita pakai EC2 Instance Connect dari browser.")
+h3("A2. Isi Nilai Secret")
+body(
+    "Buka file push_secrets_to_ssm.py di folder automation-hub. "
+    "Ganti semua nilai yang masih bertulisan GANTI_DENGAN_... dengan nilai asli:"
+)
+code(
+    '("SECRET_KEY",            "isi-random-string-panjang",    ...),\n'
+    '("GRAFANA_PASS",          "password-grafana-asli",         ...),\n'
+    '("AWS_ACCESS_KEY_ID",     "AKIA...",                       ...),\n'
+    '("AWS_SECRET_ACCESS_KEY", "secret-key-aws",                ...),\n'
+    '("SMTP_PASS",             "app-password-gmail",            ...),\n'
+    '# ... dan seterusnya'
+)
+note("JANGAN commit file ini setelah diisi nilai asli!", bg='FFE8E8', emoji='⚠️')
 
-add_heading("Langkah 5: Setting Firewall (Security Group)", 2, (0,0,0))
-add_para("Di bagian Network settings, klik Edit, lalu pastikan ada rule berikut:")
-add_table(["Type","Port","Source","Keterangan"],[
-    ["SSH","22","Anywhere","Untuk EC2 Instance Connect"],
-    ["HTTP","80","Anywhere","Akses web aplikasi"],
-    ["Custom TCP","3000","Anywhere","Port alternatif aplikasi"],
-])
+h3("A3. Upload Secrets ke AWS SSM")
+body("Jalankan preview dulu untuk memastikan tidak ada error:")
+code("python3 push_secrets_to_ssm.py --dry-run")
+body("Jika preview OK (semua [DRY] tampil), jalankan upload asli:")
+code("python3 push_secrets_to_ssm.py")
+body("Expected output:")
+code(
+    "✓  /portal-report/SECRET_KEY\n"
+    "✓  /portal-report/GRAFANA_USER\n"
+    "✓  /portal-report/GRAFANA_PASS\n"
+    "✓  /portal-report/AWS_ACCESS_KEY_ID\n"
+    "✓  /portal-report/SMTP_PASS\n"
+    "....\n"
+    "Done: 12 pushed, 0 failed"
+)
 
-add_heading("Langkah 6: Launch Instance", 2, (0,0,0))
-add_para("1. Klik Launch Instance")
-add_para("2. Tunggu status berubah menjadi Running (sekitar 1-2 menit)")
-add_para("3. Klik nama instance untuk melihat detailnya")
-add_para("4. Catat Public IPv4 Address (contoh: 54.123.45.67)")
-add_para("")
-add_para("⚠  PENTING — Cara Hemat Biaya:", bold=True)
-add_para("   Setelah selesai menggunakan aplikasi, selalu STOP instance!", indent=True)
-add_para("   Cara Stop: EC2 → pilih instance → Instance State → Stop Instance", indent=True)
-add_para("   Cara Start lagi: EC2 → pilih instance → Instance State → Start Instance", indent=True)
-add_para("   (Catatan: IP server berubah setiap kali Start. Catat IP baru setelah Start.)", indent=True)
+h3("A4. Verifikasi Upload SSM")
+body("Pastikan semua secret sudah tersimpan di SSM:")
+code(
+    "aws ssm get-parameters-by-path \\\n"
+    "  --path /portal-report \\\n"
+    "  --with-decryption \\\n"
+    "  --region ap-southeast-1 \\\n"
+    "  --query 'Parameters[*].Name' \\\n"
+    "  --output table"
+)
+body("Harus muncul daftar 12+ parameter /portal-report/...")
+
 doc.add_page_break()
 
-# BAGIAN 2
-add_heading("Bagian 2 — Masuk ke Server Lewat AWS Console")
+# ══════════════════════════════════════════════════════════
+#  BAGIAN B — DI SERVER PRODUCTION
+# ══════════════════════════════════════════════════════════
+h2("🖧  BAGIAN B — Di Server Production")
+note("Semua perintah berikut dijalankan di dalam server via SSH.", bg='E8F0FE', emoji='🔐')
 
-add_heading("Langkah 7: Buka EC2 Instance Connect", 2, (0,0,0))
-add_para("1. Di halaman EC2, klik instance portalreport yang sudah dibuat")
-add_para("2. Klik tombol Connect (di bagian atas)")
-add_para("3. Pilih tab EC2 Instance Connect")
-add_para("4. Klik tombol Connect")
-add_para("5. Akan terbuka jendela terminal baru langsung di browser ✅")
-add_para("   Tampilan: ubuntu@ip-xxx:~$  → berarti kamu sudah masuk ke server")
+h3("B1. SSH ke Server")
+code("ssh user@<ip-server-production>")
+body("Masuk ke folder project:")
+code("cd /path/to/automation-hub")
+
+h3("B2. Test Koneksi Redis Eksternal")
+body("Sebelum update apapun, pastikan Redis eksternal bisa diakses:")
+code("redis-cli -h 172.19.10.143 -p 6379 -n 8 ping")
+body("Expected: ")
+code("PONG")
+note(
+    "Jika Redis menggunakan password, gunakan:\n"
+    "redis-cli -h 172.19.10.143 -p 6379 -n 8 -a <password> ping\n"
+    "Tambahkan password ke .env: REDIS_URL=redis://:<password>@172.19.10.143:6379/8",
+    bg='FFF8E1', emoji='🔑'
+)
+
+h3("B3. Test Akses SSM dari Server")
+code(
+    "aws ssm get-parameters-by-path \\\n"
+    "  --path /portal-report \\\n"
+    "  --with-decryption \\\n"
+    "  --region ap-southeast-1"
+)
+body("Jika gagal (NoCredentialProviders), konfigurasi AWS di server:")
+code("aws configure\n# Isi access key, secret key, region: ap-southeast-1")
+note(
+    "Jika server adalah EC2, lebih baik attach IAM Role 'AmazonSSMReadOnlyAccess' "
+    "ke instance daripada menyimpan credentials di server.",
+    bg='E8F8FF', emoji='💡'
+)
+
+h3("B4. Pull Kode Terbaru")
+code(
+    "git fetch origin\n"
+    "git pull origin main"
+)
+body("Pastikan tidak ada conflict. Jika ada, resolve dulu sebelum lanjut.")
+code("git status   # harus: 'nothing to commit, working tree clean'")
+
+h3("B5. Update File .env")
+body(
+    "File .env di server tidak perlu berisi password apapun — semua diambil dari SSM. "
+    "Cukup berisi 4 baris ini:"
+)
+code(
+    "FLASK_ENV=production\n"
+    "REDIS_URL=redis://172.19.10.143:6379/8\n"
+    "SSM_PREFIX=/portal-report\n"
+    "AWS_REGION=ap-southeast-1"
+)
+body("Buat/update file .env:")
+code(
+    "cp .env.example .env\n"
+    "nano .env\n"
+    "# Edit sesuai 4 baris di atas, simpan dengan Ctrl+X → Y → Enter"
+)
+
+h3("B6. Build Ulang Docker Image")
+body("Rebuild semua image dengan kode terbaru:")
+code("docker compose build")
+note(
+    "Proses ini membutuhkan beberapa menit karena mengunduh dependencies. "
+    "Tunggu sampai selesai sebelum lanjut ke step berikutnya.",
+    bg='FFF8E1', emoji='⏳'
+)
+
+h3("B7. Jalankan Semua Container")
+code("docker compose up -d")
+body("Cek semua container berjalan:")
+code("docker compose ps")
+body("Expected output — 3 container status Up (tidak ada redis lokal lagi):")
+code(
+    "NAME                        STATUS\n"
+    "automation-hub-backend-1    Up\n"
+    "automation-hub-worker-1     Up\n"
+    "automation-hub-frontend-1   Up"
+)
+
 doc.add_page_break()
 
-# BAGIAN 3
-add_heading("Bagian 3 — Install Docker di Server")
-add_para("Jalankan perintah berikut satu per satu di terminal browser yang sudah terbuka:")
+# ══════════════════════════════════════════════════════════
+#  BAGIAN C — VERIFIKASI
+# ══════════════════════════════════════════════════════════
+h2("🔍  BAGIAN C — Verifikasi Setelah Update")
 
-add_heading("Langkah 8: Update Server", 2, (0,0,0))
-add_code("sudo apt update && sudo apt upgrade -y")
-add_para("Tunggu sampai selesai (sekitar 1-2 menit). Kalau ada pertanyaan, ketik Y lalu Enter.")
+h3("C1. Cek Log Backend")
+body("Pastikan SSM berhasil load dan backend tidak error:")
+code(
+    "docker logs automation-hub-backend-1 2>&1 | grep -E 'SSM|Running|ERROR' | head -20"
+)
+body("Log SSM yang diharapkan muncul:")
+code(
+    "SSM: loaded 12 parameters from /portal-report\n"
+    "SSM: all secrets injected into os.environ\n"
+    " * Running on http://0.0.0.0:5000"
+)
 
-add_heading("Langkah 9: Install Docker", 2, (0,0,0))
-add_code("curl -fsSL https://get.docker.com | sh")
-add_para("Tunggu sampai selesai (sekitar 2-3 menit).")
+h3("C2. Cek Log Worker (Celery)")
+code(
+    "docker logs automation-hub-worker-1 2>&1 | grep -E 'SSM|celery|ERROR' | head -20"
+)
+body("Worker harus terhubung ke Redis eksternal:")
+code(
+    "SSM: loaded 12 parameters from /portal-report\n"
+    "[2026-09-01 ...] celery@worker ready."
+)
 
-add_heading("Langkah 10: Tambah User ke Grup Docker", 2, (0,0,0))
-add_code("sudo usermod -aG docker ubuntu")
-add_code("newgrp docker")
+h3("C3. Test API")
+code(
+    "curl http://localhost:5000/api/ping\n"
+    "# Expected: {\"status\": \"ok\"}\n\n"
+    "curl http://localhost:5000/api/auth/users\n"
+    "# Expected: JSON list berisi admin, suhendi, Priyanto, dll"
+)
 
-add_heading("Langkah 11: Verifikasi Docker Berhasil", 2, (0,0,0))
-add_code("docker --version")
-add_para("Kalau muncul Docker version 24.x.x berarti berhasil ✅")
-doc.add_page_break()
+h3("C4. Buka Aplikasi di Browser")
+body("Buka browser dan akses:")
+code("http://<ip-server>:3000")
+body("Login menggunakan salah satu akun berikut:")
+doc.add_paragraph()
+user_table()
 
-# BAGIAN 4
-add_heading("Bagian 4 — Upload Aplikasi ke Server")
-add_para("Karena kita tidak pakai SSH lokal, file di-upload menggunakan GitHub atau langsung copy-paste script install.")
+# ══════════════════════════════════════════════════════════
+#  RESOURCE LIMITS
+# ══════════════════════════════════════════════════════════
+h2("⚙️  Resource Limits Container")
+body("Limit yang sudah dikonfigurasi di docker-compose.yml:")
+doc.add_paragraph()
+resource_table()
 
-add_heading("Langkah 12: Compress Folder Aplikasi (di komputer lokal)", 2, (0,0,0))
-add_para("Buka WSL/Terminal di komputer lokal, jalankan:")
-add_code("cd /home/suhendi")
-add_code("tar -czf portalreport.tar.gz automation-hub/")
-add_para("File portalreport.tar.gz akan terbuat di folder /home/suhendi/")
+# ══════════════════════════════════════════════════════════
+#  ROLLBACK
+# ══════════════════════════════════════════════════════════
+h2("🔄  Rollback (Jika Ada Masalah)")
 
-add_heading("Langkah 13: Upload File ke Server via S3 (Cara Termudah)", 2, (0,0,0))
-add_para("A. Upload file ke S3 dulu dari komputer lokal:")
-add_para("   1. Buka AWS Console → S3 → pilih bucket (atau buat bucket baru)")
-add_para("   2. Klik Upload → pilih file portalreport.tar.gz → Upload")
-add_para("   3. Setelah upload, klik file tersebut → Copy S3 URI (contoh: s3://nama-bucket/portalreport.tar.gz)")
-add_para("")
-add_para("B. Download dari S3 ke server (di terminal EC2 Instance Connect):")
-add_code("aws s3 cp s3://nama-bucket/portalreport.tar.gz ~/portalreport.tar.gz")
-add_para("Ganti nama-bucket dengan nama bucket S3 kamu.")
+note(
+    "Jika SSM tidak bisa diakses, aplikasi otomatis fallback ke env var. "
+    "Isi nilai asli langsung di .env sebagai solusi darurat.",
+    bg='FFE8E8', emoji='🚨'
+)
 
-add_heading("Langkah 14: Extract File di Server", 2, (0,0,0))
-add_code("cd ~")
-add_code("tar -xzf portalreport.tar.gz")
-add_code("cd automation-hub")
-add_para("Verifikasi folder ada:")
-add_code("ls")
-add_para("Harus muncul: backend  frontend  docker-compose.yml  nginx  dst.")
-doc.add_page_break()
+h3("Fallback: Isi .env Langsung")
+code(
+    "FLASK_ENV=production\n"
+    "REDIS_URL=redis://172.19.10.143:6379/8\n"
+    "SSM_PREFIX=/portal-report\n"
+    "AWS_REGION=ap-southeast-1\n\n"
+    "# Fallback — isi jika SSM tidak tersedia\n"
+    "SECRET_KEY=nilai-asli\n"
+    "GRAFANA_USER=nilai-asli\n"
+    "GRAFANA_PASS=nilai-asli\n"
+    "# ... dst"
+)
+body("Restart container setelah update .env:")
+code("docker compose up -d")
 
-# BAGIAN 5
-add_heading("Bagian 5 — Jalankan Aplikasi")
+h3("Rollback ke Versi Sebelumnya")
+code(
+    "git log --oneline -5           # lihat history commit\n"
+    "git checkout <commit-lama>     # kembali ke versi lama\n"
+    "docker compose build\n"
+    "docker compose up -d"
+)
 
-add_heading("Langkah 15: Jalankan Docker Compose", 2, (0,0,0))
-add_code("docker compose up -d")
-add_para("Perintah ini akan menjalankan semua komponen secara otomatis.")
-add_para("Pertama kali membutuhkan waktu 5-10 menit untuk download komponen.")
+# ══════════════════════════════════════════════════════════
+#  RANGKUMAN STEP
+# ══════════════════════════════════════════════════════════
+h2("📌  Rangkuman Urutan Step")
+steps = [
+    ("A1", "Login AWS CLI",            "aws configure di mesin lokal"),
+    ("A2", "Isi nilai secret",         "Edit push_secrets_to_ssm.py"),
+    ("A3", "Upload ke SSM",            "python3 push_secrets_to_ssm.py"),
+    ("A4", "Verifikasi SSM",           "Cek semua parameter tersimpan"),
+    ("B1", "SSH ke server",            "ssh user@<ip-server>"),
+    ("B2", "Test Redis",               "redis-cli -h 172.19.10.143 ping"),
+    ("B3", "Test SSM dari server",     "aws ssm get-parameters-by-path ..."),
+    ("B4", "Git pull",                 "git pull origin main"),
+    ("B5", "Update .env",              "cp .env.example .env → edit 4 baris"),
+    ("B6", "Docker build",             "docker compose build"),
+    ("B7", "Docker up",                "docker compose up -d"),
+    ("C1", "Cek log backend",          "docker logs automation-hub-backend-1"),
+    ("C2", "Cek log worker",           "docker logs automation-hub-worker-1"),
+    ("C3", "Test API",                 "curl http://localhost:5000/api/ping"),
+    ("C4", "Buka browser",             "http://<ip-server>:3000"),
+]
 
-add_heading("Langkah 16: Cek Status Semua Service", 2, (0,0,0))
-add_code("docker compose ps")
-add_para("Pastikan semua service berstatus Up ✅")
-add_table(["Service","Status"],[
-    ["automation-hub-backend-1","Up"],
-    ["automation-hub-frontend-1","Up"],
-    ["automation-hub-worker-1","Up"],
-    ["automation-hub-redis-1","Up"],
-])
-doc.add_page_break()
+tbl = doc.add_table(rows=len(steps)+1, cols=3)
+tbl.style = 'Table Grid'
+for i, h in enumerate(['Step', 'Nama', 'Perintah / Tindakan']):
+    c = tbl.cell(0, i)
+    set_cell_bg(c, '1A1A1A')
+    r = c.paragraphs[0].add_run(h)
+    r.font.bold = True; r.font.color.rgb = WHITE
+    r.font.name = 'Calibri'; r.font.size = Pt(10)
+    c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-# BAGIAN 6
-add_heading("Bagian 6 — Test Aplikasi")
+for ri, (step, name, cmd) in enumerate(steps):
+    bg = 'FFFFFF' if ri % 2 == 0 else 'F5F5F5'
+    for ci, val in enumerate([step, name, cmd]):
+        c = tbl.cell(ri+1, ci)
+        set_cell_bg(c, bg)
+        p = c.paragraphs[0]
+        r = p.add_run(val)
+        r.font.name = 'Courier New' if ci in (0, 2) else 'Calibri'
+        r.font.size = Pt(9.5)
+        if ci == 0:
+            r.font.bold = True
+            r.font.color.rgb = RED
 
-add_heading("Langkah 17: Buka di Browser", 2, (0,0,0))
-add_para("1. Buka tab browser baru")
-add_para("2. Ketik di address bar (gunakan IP yang dicatat di Langkah 6):")
-add_code("http://<IP-SERVER>")
-add_para("Contoh:"); add_code("http://54.123.45.67")
-add_para("3. Halaman login PortalReport akan muncul ✅")
+doc.add_paragraph()
 
-add_heading("Langkah 18: Login ke Aplikasi", 2, (0,0,0))
-add_table(["Field","Isi"],[
-    ["Username","admin"],
-    ["Password","ICSsupport2026"],
-])
-add_para("Klik tombol Login → Dashboard PortalReport akan muncul ✅")
-doc.add_page_break()
-
-# PERINTAH PENTING
-add_heading("Perintah Penting")
-add_para("Jalankan perintah ini di terminal EC2 Instance Connect:")
-add_table(["Kebutuhan","Perintah"],[
-    ["Cek log aplikasi","docker compose logs -f"],
-    ["Restart semua service","docker compose restart"],
-    ["Stop aplikasi","docker compose down"],
-    ["Update aplikasi","docker compose up -d --build"],
-    ["Cek penggunaan resource","docker stats"],
-    ["Bersihkan cache Docker","docker system prune -f"],
-])
-
-# TROUBLESHOOTING
-add_heading("Troubleshooting")
-add_table(["Masalah","Solusi"],[
-    ["EC2 Instance Connect gagal connect","Pastikan port 22 di Security Group terbuka (Anywhere)"],
-    ["Browser tidak bisa buka web","Pastikan port 80 di Security Group terbuka (Anywhere)"],
-    ["Service tidak mau jalan","Jalankan: docker compose logs untuk lihat error"],
-    ["Storage server penuh","Jalankan: docker system prune -f"],
-    ["aws s3 cp gagal","Pastikan IAM Role EC2 punya akses S3, atau gunakan presigned URL"],
-])
-
-# INFO APLIKASI
-add_heading("Informasi Aplikasi")
-add_table(["Item","Detail"],[
-    ["Nama Aplikasi","PortalReport"],
-    ["Dibuat oleh","ICS Compute"],
-    ["Teknologi","Python, React, Redis, Docker Compose"],
-    ["Port Akses","80 (HTTP)"],
-    ["OS Server","Ubuntu Server 22.04 LTS"],
-    ["Instance Type","t3.small (2 vCPU, 2GB RAM)"],
-    ["Storage","15 GB (gp3)"],
-    ["Estimasi Biaya","± $2/bulan (pakai 2 jam/minggu, Stop saat tidak dipakai)"],
-    ["Akses Server","EC2 Instance Connect (via browser AWS Console)"],
-])
-
+# Footer
 p = doc.add_paragraph()
 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-r = p.add_run("Dokumen ini dibuat untuk keperluan internal ICS Compute  |  Juli 2026")
-r.font.size = Pt(9); r.font.color.rgb = RGBColor(150,150,150)
+r = p.add_run("Portal Report v2  ·  ICS Compute  ·  September 2026")
+r.font.size = Pt(9)
+r.font.color.rgb = GRAY
+r.font.name = 'Calibri'
 
-doc.save("/home/suhendi/automation-hub/DEPLOY_GUIDE.docx")
-print("DONE: DEPLOY_GUIDE.docx saved")
+# ── Save ─────────────────────────────────────────────────
+out = "/home/suhendi/automation-hub/DEPLOY_UPDATE_GUIDE.docx"
+doc.save(out)
+print(f"✓ Saved: {out}")
