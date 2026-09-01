@@ -538,14 +538,10 @@ function buildDailyReport(alerts, opts) {
       for (const a of items) {
         const res  = a.resource && a.resource !== "-" ? a.resource : "";
         const time = a.active_at ? ` [${fmtTime(a.active_at)}]` : "";
-        // Ambil nomor ticket dari TICKET_MAP_KEY jika ada
+        // Ambil nomor ticket — generate jika belum ada
         const alertKey = `${a.name}||${a.resource}||${a.active_at}`;
-        let ticketNum = "-";
-        try {
-          const map = JSON.parse(localStorage.getItem("pr_alert_tickets") || "{}");
-          ticketNum = map[alertKey] || "-";
-        } catch {}
-        const ticketStr = ticketNum !== "-" ? ` [${ticketNum}]` : "";
+        const ticketNum = getOrCreateTicket(alertKey);
+        const ticketStr = ticketNum ? ` [${ticketNum}]` : "";
         detail += `* ${shortName(a.name)}${res ? " -> " + res : ""}${ticketStr}${time}\n`;
       }
     }

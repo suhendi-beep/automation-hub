@@ -176,11 +176,19 @@ function DashIllustration() {
 }
 
 export default function LoginPage({ onLogin }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPwd,  setShowPwd]  = useState(false);
-  const [error,    setError]    = useState("");
-  const [loading,  setLoading]  = useState(false);
+  const REMEMBER_KEY = "pr_remember_credentials";
+
+  // Load saved credentials on mount
+  const saved = (() => {
+    try { return JSON.parse(localStorage.getItem(REMEMBER_KEY) || "{}"); } catch { return {}; }
+  })();
+
+  const [username,  setUsername]  = useState(saved.username || "");
+  const [password,  setPassword]  = useState(saved.password || "");
+  const [remember,  setRemember]  = useState(!!saved.username);
+  const [showPwd,   setShowPwd]   = useState(false);
+  const [error,     setError]     = useState("");
+  const [loading,   setLoading]   = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -193,11 +201,16 @@ export default function LoginPage({ onLogin }) {
       });
       const data = await res.json();
       if (data.ok) {
+        // Save atau hapus credentials sesuai pilihan remember
+        if (remember) {
+          localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username, password }));
+        } else {
+          localStorage.removeItem(REMEMBER_KEY);
+        }
         sessionStorage.setItem("pr_auth",    "1");
         sessionStorage.setItem("pr_user",    data.username);
         sessionStorage.setItem("pr_display", data.display);
         sessionStorage.setItem("pr_role",    data.role);
-        // Log login activity
         fetch("/api/activity", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -268,6 +281,20 @@ export default function LoginPage({ onLogin }) {
                 <span>⚠</span> {error}
               </div>
             )}
+            {/* Remember me */}
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <input
+                id="remember-me"
+                type="checkbox"
+                checked={remember}
+                onChange={e => setRemember(e.target.checked)}
+                style={{ width:14, height:14, cursor:"pointer", accentColor:"#B11226" }}
+              />
+              <label htmlFor="remember-me"
+                style={{ fontSize:11, color:"var(--muted)", cursor:"pointer", userSelect:"none" }}>
+                Remember me
+              </label>
+            </div>
 
             <button type="submit" style={{
               ...L.submitBtn,
