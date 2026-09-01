@@ -554,7 +554,7 @@ function buildDailyReport(alerts, opts) {
     ticketSection = `\n*2. Ticket Close*\nTotal : ${closedTickets.length}\n\n`;
     closedTickets.forEach((t, i) => {
       const ticketNum = (t.detail || "").match(/Ticket:\s*(INC-\S+)/)?.[1] || "-";
-      ticketSection += `${i + 1}. ${ticketNum} — ${t.description.replace(/^\[ALERT\]\s*/,"")}\n`;
+      ticketSection += `${i + 1}. ${ticketNum}\n`;
     });
   } else {
     ticketSection = `\n*2. Ticket Close*\nTotal : 0\n- (tidak ada ticket close shift ini)\n`;
