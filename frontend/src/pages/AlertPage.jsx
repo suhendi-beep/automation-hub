@@ -680,7 +680,12 @@ function DailyReportModal({ alerts, onClose }) {
     fetch("/api/logs/pelindo/daily_ilcs_status")
       .then(r => r.json())
       .then(d => {
-        const text = (d.logs || []).join("\n");
+        const full = (d.logs || []).join("\n");
+        // File log menumpuk terus lintas run (append, bukan overwrite).
+        // Ambil hanya blok SUMMARY paling akhir — kalau tidak, .match() bisa
+        // menangkap ringkasan run lama yang masih ikut dalam 300 baris terakhir.
+        const summaryIdx = full.lastIndexOf("DAILY BACKUP REPORT SUMMARY");
+        const text = summaryIdx !== -1 ? full.slice(summaryIdx) : full;
         const total   = text.match(/📦 Total\s*:\s*(\d+)/)?.[1]   || text.match(/Total\s*:\s*(\d+)/)?.[1];
         const success = text.match(/✅ Success\s*:\s*(\d+)/)?.[1]  || text.match(/Success\s*:\s*(\d+)/)?.[1];
         const failed  = text.match(/❌ Failed\s*:\s*(\d+)/)?.[1]   || text.match(/Failed\s*:\s*(\d+)/)?.[1];
