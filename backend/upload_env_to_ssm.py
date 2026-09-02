@@ -17,12 +17,18 @@ from urllib.parse import urlparse
 
 import boto3
 
-PARAMETER_NAMES = (
+# Required for Pelindo/Portal Report core features (Grafana automation, Celery/Redis).
+REQUIRED_PARAMETER_NAMES = (
     "REDIS_URL",
     "SECRET_KEY",
     "GRAFANA_USER",
     "GRAFANA_PASS",
     "GRAFANA_URL",
+)
+
+# Only needed for NIKP AWS cost reporting and email reminders. Uploaded when
+# present, but their absence does not block the required parameters above.
+OPTIONAL_PARAMETER_NAMES = (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_ACCOUNT_ID",
@@ -57,14 +63,23 @@ def main() -> int:
         return 2
 
     prefix = args.prefix.rstrip("/")
-    values = {name: os.getenv(name, "").strip() for name in PARAMETER_NAMES}
-    missing = [name for name, value in values.items() if not value]
-    if missing:
-        print("Upload stopped: these variables are empty in the current environment:")
-        for name in missing:
+    required_values = {name: os.getenv(name, "").strip() for name in REQUIRED_PARAMETER_NAMES}
+    missing_required = [name for name, value in required_values.items() if not value]
+    if missing_required:
+        print("Upload stopped: these required variables are empty in the current environment:")
+        for name in missing_required:
             print(f"  - {name}")
         print("Keep the existing production .env in place, then retry.")
         return 1
+
+    optional_values = {name: os.getenv(name, "").strip() for name in OPTIONAL_PARAMETER_NAMES}
+    missing_optional = [name for name, value in optional_values.items() if not value]
+    if missing_optional:
+        print("Skipping optional parameters not set in the current environment (NIKP/email features):")
+        for name in missing_optional:
+            print(f"  - {name}")
+
+    values = {**required_values, **{k: v for k, v in optional_values.items() if v}}
 
     redis_url = values["REDIS_URL"]
     if not urlparse(redis_url).password:
@@ -80,7 +95,7 @@ def main() -> int:
         print("Attach temporary permission to write /portal-report/* to the server IAM role.")
         return 1
 
-    print(f"Uploading {len(PARAMETER_NAMES)} encrypted parameters to {prefix} in {args.region}.")
+    print(f"Uploading {len(values)} encrypted parameters to {prefix} in {args.region}.")
     for name, value in values.items():
         client.put_parameter(
             Name=f"{prefix}/{name}",
