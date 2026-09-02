@@ -161,7 +161,7 @@ function LaporkanModal({ alert, onClose, onEskalasi }) {
   const doCopy = () => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
-      onEskalasi(alert._key);
+      onEskalasi(alert._key, alert);
       logActivity(
         "Laporkan Alert",
         "alert",
@@ -180,7 +180,7 @@ function LaporkanModal({ alert, onClose, onEskalasi }) {
       const el = document.getElementById("laporkan-textarea");
       if (el) { el.select(); document.execCommand("copy"); }
       setCopied(true);
-      onEskalasi(alert._key);
+      onEskalasi(alert._key, alert);
       setTimeout(() => setCopied(false), 2000);
     });
   };
@@ -1067,14 +1067,32 @@ export default function AlertPage() {
     return () => { clearInterval(iv); clearInterval(ivEsk); };
   }, [load, loadEskalasi]);
 
-  const markEskalasi = (key) => {
+  const markEskalasi = (key, alert) => {
     setEskalasi(prev => new Set(prev).add(key));
-    const by = (typeof sessionStorage !== "undefined" && sessionStorage.getItem("pr_display")) || "";
+    const by = sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "";
     fetch("/api/alerts/eskalasi", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, by }),
     }).catch(() => {});
+
+    // PIC task di Daily Task ikut diupdate jadi engineer yang benar-benar
+    // melapor — bukan siapa yang browsernya kebetulan lebih dulu terbuka
+    // saat auto-sync membuat task tersebut.
+    if (alert && by) {
+      const resource = alert.resource && alert.resource !== "-" ? ` → ${alert.resource}` : "";
+      const desc     = `[ALERT] ${shortName(alert.name)}${resource}`;
+      fetch("/api/tasks")
+        .then(r => r.json())
+        .then(tasks => {
+          if (!Array.isArray(tasks)) return;
+          const match = tasks.find(t => t.description === desc && t.status !== "Close" && t.status !== "Cancelled");
+          if (match && match.pic !== by) {
+            taskApiUpdate(match.id, { pic: by });
+          }
+        })
+        .catch(() => {});
+    }
   };
 
   // ── Auto-buat task di Daily Task untuk setiap alert baru ──
