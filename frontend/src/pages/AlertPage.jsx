@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { logActivity } from "../activityLog.js";
+import { isAlertMuted, setAlertMuted, onAlertMuteChange } from "../alertMute.js";
 
 /* ─── helpers ─────────────────────────────────────────── */
 function fmtDur(min) {
@@ -473,16 +474,10 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan }) {
   );
 }
 
-/* ─── Alert Sound ────────────────────────────────────── */
-function playAlertSound() {
-  try {
-    const audio = new Audio("/alert.mp3");
-    audio.volume = 0.7;
-    audio.play().catch(() => {});
-  } catch (e) {
-    // browser blocked
-  }
-}
+// Ringtone playback itself now lives in components/AlertWatcher.jsx, which
+// is mounted globally in App.jsx so it keeps ringing on every page — not
+// just while this Alert Monitor page happens to be open. This page only
+// reads/writes the shared mute flag via alertMute.js.
 
 // Urutan folder sesuai format handover
 const REPORT_FOLDER_ORDER = [
@@ -1032,7 +1027,7 @@ export default function AlertPage() {
   const [folderFil,  setFolderFil]  = useState("");
   const [modal,      setModal]      = useState(null);
   const [showReport, setShowReport] = useState(false);
-  const [muted,      setMuted]      = useState(false);
+  const [muted,      setMutedState] = useState(() => isAlertMuted());
   const [toast,      setToast]      = useState(null); // {msg, count}
   // eskalasi: Set of _key strings — shared di backend supaya semua
   // engineer melihat alert yang sudah dilaporkan oleh siapa pun.
@@ -1110,22 +1105,11 @@ export default function AlertPage() {
         setTimeout(() => setToast(null), 4000);
       }
     }).catch(() => {});
-  }, [allAlerts]);  const soundRef = React.useRef(null);
-  useEffect(() => {
-    if (soundRef.current) { clearInterval(soundRef.current); soundRef.current = null; }
+  }, [allAlerts]);
 
-    // hitung alert aktif yang belum dieskalasikan
-    const pending = allAlerts
-      .filter(a => a.duration_min >= 10)
-      .filter(a => !eskalasi.has(`${a.name}||${a.resource}||${a.active_at}`));
-
-    if (pending.length > 0 && !muted) {
-      // bunyi sekali langsung, lalu tiap 5 menit
-      playAlertSound();
-      soundRef.current = setInterval(playAlertSound, 5 * 60 * 1000);
-    }
-    return () => { if (soundRef.current) clearInterval(soundRef.current); };
-  }, [allAlerts, eskalasi, muted]); // re-evaluate saat data/eskalasi/mute berubah
+  // Stay in sync if mute is toggled from elsewhere (e.g. another tab/page).
+  useEffect(() => onAlertMuteChange(setMutedState), []);
+  const toggleMuted = () => setAlertMuted(!muted); // persists + notifies AlertWatcher
 
   // add _key, filter hanya > 5 menit (tidak ada batas atas)
   const withKey = allAlerts
@@ -1224,7 +1208,7 @@ export default function AlertPage() {
               display:"flex", alignItems:"center", gap:5 }}>
             📌 Sync ke Task
           </button>
-          <button onClick={() => setMuted(v => !v)}
+          <button onClick={toggleMuted}
             title={muted ? "Aktifkan suara alert" : "Matikan suara alert"}
             style={{ background: muted ? "var(--surface2)" : "rgba(234,179,8,.1)",
               border: muted ? "1px solid var(--border2)" : "1px solid #EAB308",

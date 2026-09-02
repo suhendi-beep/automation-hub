@@ -8,6 +8,7 @@ import LoginPage    from "./pages/LoginPage.jsx";
 import AlertPage    from "./pages/AlertPage.jsx";
 import EngineerActivity from "./pages/EngineerActivity.jsx";
 import ReminderNotif from "./components/ReminderNotif.jsx";
+import AlertWatcher  from "./components/AlertWatcher.jsx";
 import "./styles.css";
 
 export default function App() {
@@ -96,6 +97,9 @@ export default function App() {
       </main>
       {/* Global reminder notifications — shown on all pages */}
       {authed && <ReminderNotif />}
+      {/* Global alert ringtone + new-alert toasts — active on every page,
+          not just while "Alert Monitor" is open */}
+      {authed && <AlertWatcher />}
     </div>
   );
 }
