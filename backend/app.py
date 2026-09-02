@@ -661,4 +661,7 @@ def approve_delete(task_id):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Debug mode exposes Flask's interactive debugger (remote code execution
+    # risk) and must stay off in production. Opt in locally with FLASK_DEBUG=1.
+    debug_mode = os.getenv("FLASK_DEBUG", "0").strip().lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
