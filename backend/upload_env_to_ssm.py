@@ -13,10 +13,12 @@ Server harus memakai IAM Role yang sementara memiliki ssm:PutParameter untuk
 import argparse
 import os
 import sys
+from urllib.parse import urlparse
 
 import boto3
 
 PARAMETER_NAMES = (
+    "REDIS_URL",
     "SECRET_KEY",
     "GRAFANA_USER",
     "GRAFANA_PASS",
@@ -62,6 +64,12 @@ def main() -> int:
         for name in missing:
             print(f"  - {name}")
         print("Keep the existing production .env in place, then retry.")
+        return 1
+
+    redis_url = values["REDIS_URL"]
+    if not urlparse(redis_url).password:
+        print("Upload stopped: REDIS_URL must include the Redis username/password.")
+        print("Ask the Redis administrator for the authenticated connection URI.")
         return 1
 
     client = boto3.client("ssm", region_name=args.region)

@@ -1,16 +1,14 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from celery_worker import celery, run_automation, run_oci_login
 import os, glob
 from datetime import datetime
 import oci_session
 
-# ── Load secrets dari AWS SSM Parameter Store (fallback ke env var) ──
-try:
-    from ssm_config import load_all_into_env
-    load_all_into_env()
-except Exception:
-    pass  # SSM tidak tersedia — lanjut pakai env var biasa
+# ── Load secrets before Celery imports and configures Redis ──
+from ssm_config import load_all_into_env
+
+load_all_into_env()
+from celery_worker import REDIS_URL, celery, run_automation, run_oci_login
 
 app = Flask(__name__)
 CORS(app)
@@ -405,8 +403,7 @@ def oci_submit_otp():
     otp     = data.get("otp", "")
     if not task_id or not otp:
         return jsonify({"error": "task_id dan otp diperlukan"}), 400
-    import redis, os
-    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    import redis
     r = redis.from_url(REDIS_URL)
     r.setex(f"oci_login_otp:{task_id}", 120, otp)
     return jsonify({"status": "ok"})
@@ -415,8 +412,7 @@ def oci_submit_otp():
 @app.route("/api/oci/login_state/<task_id>")
 def oci_login_state(task_id):
     """Cek state login — apakah butuh OTP, sukses, atau error."""
-    import redis, json, os
-    REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    import redis, json
     r   = redis.from_url(REDIS_URL)
     raw = r.get(f"oci_login_state:{task_id}")
     if raw:
