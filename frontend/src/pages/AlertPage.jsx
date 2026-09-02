@@ -1034,16 +1034,21 @@ export default function AlertPage() {
   const [showReport, setShowReport] = useState(false);
   const [muted,      setMuted]      = useState(false);
   const [toast,      setToast]      = useState(null); // {msg, count}
-  // eskalasi: Set of _key strings
-  const [eskalasi, setEskalasi] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(ESKALASI_KEY)||"[]")); }
-    catch { return new Set(); }
-  });
+  // eskalasi: Set of _key strings — shared di backend supaya semua
+  // engineer melihat alert yang sudah dilaporkan oleh siapa pun.
+  const [eskalasi, setEskalasi] = useState(() => new Set());
   // Track alert _key yang sudah dibuat task — hindari duplikat
   const [alertTaskIds, setAlertTaskIds] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem(ALERT_TASK_KEY)||"[]")); }
     catch { return new Set(); }
   });
+
+  const loadEskalasi = useCallback(() => {
+    fetch("/api/alerts/eskalasi")
+      .then(r => r.json())
+      .then(d => setEskalasi(new Set(Object.keys(d || {}))))
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1056,17 +1061,20 @@ export default function AlertPage() {
 
   useEffect(() => {
     load();
+    loadEskalasi();
     const iv = setInterval(load, 30000); // refresh tiap 30 detik
-    return () => clearInterval(iv);
-  }, [load]);
+    const ivEsk = setInterval(loadEskalasi, 30000); // sync status eskalasi antar user
+    return () => { clearInterval(iv); clearInterval(ivEsk); };
+  }, [load, loadEskalasi]);
 
   const markEskalasi = (key) => {
-    setEskalasi(prev => {
-      const next = new Set(prev);
-      next.add(key);
-      try { localStorage.setItem(ESKALASI_KEY, JSON.stringify([...next])); } catch {}
-      return next;
-    });
+    setEskalasi(prev => new Set(prev).add(key));
+    const by = (typeof sessionStorage !== "undefined" && sessionStorage.getItem("pr_display")) || "";
+    fetch("/api/alerts/eskalasi", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, by }),
+    }).catch(() => {});
   };
 
   // ── Auto-buat task di Daily Task untuk setiap alert baru ──

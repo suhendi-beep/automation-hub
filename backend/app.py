@@ -605,6 +605,46 @@ def delete_task(task_id):
     return jsonify({"ok": True})
 
 
+# ══════════════════════════════════════════════════════════
+#  ALERT ESCALATION — Shared across all users
+#  Prevents each engineer from seeing "belum dieskalasikan" for
+#  an alert another engineer already reported.
+# ══════════════════════════════════════════════════════════
+ESKALASI_PATH = "/app/shared/logs/alert_eskalasi.json"
+
+def _load_eskalasi():
+    try:
+        with open(ESKALASI_PATH) as f:
+            return _json.load(f)
+    except Exception:
+        return {}
+
+def _save_eskalasi(data):
+    os.makedirs(os.path.dirname(ESKALASI_PATH), exist_ok=True)
+    with open(ESKALASI_PATH, "w") as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2)
+
+@app.route("/api/alerts/eskalasi", methods=["GET"])
+def get_eskalasi():
+    """Return { alert_key: { by, at } } for every alert reported so far."""
+    return jsonify(_load_eskalasi())
+
+@app.route("/api/alerts/eskalasi", methods=["POST"])
+def mark_eskalasi():
+    """Mark an alert as escalated/reported so every engineer sees it."""
+    data = request.json or {}
+    key  = data.get("key", "").strip()
+    if not key:
+        return jsonify({"error": "key diperlukan"}), 400
+    store = _load_eskalasi()
+    store[key] = {
+        "by": data.get("by", ""),
+        "at": datetime.utcnow().isoformat() + "Z",
+    }
+    _save_eskalasi(store)
+    return jsonify({"ok": True, "key": key})
+
+
 # ── Delete approval flow ──────────────────────────────────
 DELETE_REQ_PATH = "/app/shared/logs/delete_requests.json"
 
