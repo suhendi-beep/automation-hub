@@ -130,20 +130,20 @@ function buildTemplate(a, ticketNum) {
 
   // Bangun baris detail — hanya tampilkan yang ada nilainya (tidak "-")
   const lines = [
-    `Ticket     : ${ticketNum}`,
     `Folder     : ${folderDisplay(a.folder)}`,
     `Alertname  : ${shortName(a.name)}`,
+    inst      !== "-" ? `Instance   : ${inst}`      : null,
+    cluster   !== "-" ? `Cluster    : ${cluster}`   : null,
     `Severity   : ${sev.toUpperCase()}`,
     `Duration   : ${fmtDur(a.duration_min)}`,
-    `Since      : ${fmtTime(a.active_at)}`,
-    inst      !== "-" ? `Instance   : ${inst}`      : null,
     nodename  !== "-" ? `Nodename   : ${nodename}`  : null,
-    cluster   !== "-" ? `Cluster    : ${cluster}`   : null,
     namespace !== "-" ? `Namespace  : ${namespace}` : null,
     job       !== "-" ? `Job        : ${job}`        : null,
   ].filter(Boolean).join("\n");
 
   return `Selamat ${greetingByTime()} tim, izin menginformasikan saat ini terdapat alert
+
+#Ticket     : ${ticketNum}
 
 ${lines}
 
