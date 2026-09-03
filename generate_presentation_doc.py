@@ -158,7 +158,7 @@ doc.add_paragraph()
 
 steps = [
     ("1", "Buka Web PortalReport", "Akses lewat browser: http://ip-server"),
-    ("2", "Login", "Username: admin | Password: ICSsupport2026"),
+    ("2", "Login", "Username: admin | Password: admin2026!"),
     ("3", "Pilih Customer", "Contoh: klik Pelindo di sidebar"),
     ("4", "Pilih Report & Klik Run", "Contoh: Weekly Backup Report OCI ILCS → klik ▶ Run"),
     ("5", "Input Kredensial OCI", "Masukkan Tenancy, Username, Password OCI\n(tersimpan otomatis untuk penggunaan berikutnya)"),
@@ -262,7 +262,7 @@ qnas = [
     ("Apakah password OCI tersimpan di server?",
      "Tidak. Password OCI hanya dipakai saat proses berjalan dan tidak disimpan di database manapun."),
     ("Apakah bisa diakses dari luar kantor?",
-     "Bisa, selama tahu IP server dan kredensial login web (admin / ICSsupport2026)."),
+     "Bisa, selama tahu IP server dan kredensial login web (admin / admin2026!)."),
     ("Berapa lama proses Weekly Backup Report ILCS?",
      "Sekitar 15-20 menit untuk 60 resource. Prosesnya berjalan di background, halaman web bisa ditinggal."),
     ("Apakah bisa tambah report baru nanti?",

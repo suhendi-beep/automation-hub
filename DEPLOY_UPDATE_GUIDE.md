@@ -216,7 +216,7 @@ Login dengan salah satu user:
 
 | Username | Password | Role |
 |---|---|---|
-| admin | ICSsupport2026 | Admin |
+| admin | admin2026! | Admin |
 | suhendi | m7Kx9pQ3nRvL2wZt | Engineer |
 | Priyanto | bF4hJeU8cYsA6dNp | Engineer |
 | neal.hotama | Tg5zXw1kMrD0qVjH | Engineer |

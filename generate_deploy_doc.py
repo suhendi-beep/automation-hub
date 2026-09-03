@@ -162,7 +162,7 @@ def user_table():
         r.font.size  = Pt(10)
         p.alignment  = WD_ALIGN_PARAGRAPH.CENTER
     rows = [
-        ('admin',         'ICSsupport2026',   'Admin'),
+        ('admin',         'admin2026!',   'Admin'),
         ('suhendi',       'm7Kx9pQ3nRvL2wZt', 'Engineer'),
         ('Priyanto',      'bF4hJeU8cYsA6dNp', 'Engineer'),
         ('neal.hotama',   'Tg5zXw1kMrD0qVjH', 'Engineer'),

@@ -437,7 +437,7 @@ def oci_logout():
 #  AUTH — Multi-user with roles
 # ══════════════════════════════════════════════════════════
 USERS = {
-    "admin":         {"password": "ICSsupport2026",  "role": "admin",    "display": "Admin"},
+    "admin":         {"password": "admin2026!",  "role": "admin",    "display": "Admin"},
     "suhendi":       {"password": "m7Kx9pQ3nRvL2wZt", "role": "engineer", "display": "Suhendi"},
     "Priyanto":      {"password": "bF4hJeU8cYsA6dNp", "role": "engineer", "display": "Priyanto"},
     "neal.hotama":   {"password": "Tg5zXw1kMrD0qVjH", "role": "engineer", "display": "Neal Hotama"},

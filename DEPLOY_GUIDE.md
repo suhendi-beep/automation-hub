@@ -210,7 +210,7 @@ automation-hub-redis-1        Up
 | Field | Isi |
 |---|---|
 | Username | `admin` |
-| Password | `ICSsupport2026` |
+| Password | `admin2026!` |
 
 Klik **Login** → Dashboard muncul ✅
 
