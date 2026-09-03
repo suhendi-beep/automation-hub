@@ -152,36 +152,47 @@ Mohon untuk segera ditindaklanjuti. Terima kasih.`;
 }
 
 /* ─── Laporkan Modal ─────────────────────────────────── */
-function LaporkanModal({ alert, onClose, onEskalasi }) {
+function LaporkanModal({ alert, alreadyEskalasi, onClose, onEskalasi }) {
   const [copied,   setCopied]   = useState(false);
   // Ambil/buat ticket yang konsisten untuk alert ini
   const [ticket,   setTicket]   = useState(() => getOrCreateTicket(alert._key));
+  // Klik "Copy Template" berkali-kali dalam satu sesi modal yang sama harus
+  // tetap bisa menyalin teksnya, tapi eskalasi + log activity hanya boleh
+  // tercatat SEKALI — tanpa guard ini, "Alerts Escalated" di Engineer
+  // Activity jadi lebih besar dari jumlah tiket unik yang benar-benar ada.
+  const loggedRef = React.useRef(alreadyEskalasi);
 
   const text = buildTemplate(alert, ticket);
+
+  const markDoneOnce = () => {
+    if (loggedRef.current) return;
+    loggedRef.current = true;
+    onEskalasi(alert._key, alert);
+    logActivity(
+      "Laporkan Alert",
+      "alert",
+      [
+        `Ticket: ${ticket}`,
+        `Alert: ${shortName(alert.name)}`,
+        `Folder: ${folderDisplay(alert.folder)}`,
+        alert.resource && alert.resource !== "-" ? `Instance: ${alert.resource}` : null,
+        (alert.labels?.nodename || alert.labels?.node) ? `Nodename: ${alert.labels?.nodename || alert.labels?.node}` : null,
+        (alert.labels?.cluster || alert.labels?.kubernetes_cluster) ? `Cluster: ${alert.labels?.cluster || alert.labels?.kubernetes_cluster}` : null,
+        `Severity: ${getSeverity(alert.name, alert.severity).toUpperCase()}`,
+      ].filter(Boolean).join(" | ")
+    );
+  };
 
   const doCopy = () => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
-      onEskalasi(alert._key, alert);
-      logActivity(
-        "Laporkan Alert",
-        "alert",
-        [
-          `Ticket: ${ticket}`,
-          `Alert: ${shortName(alert.name)}`,
-          `Folder: ${folderDisplay(alert.folder)}`,
-          alert.resource && alert.resource !== "-" ? `Instance: ${alert.resource}` : null,
-          (alert.labels?.nodename || alert.labels?.node) ? `Nodename: ${alert.labels?.nodename || alert.labels?.node}` : null,
-          (alert.labels?.cluster || alert.labels?.kubernetes_cluster) ? `Cluster: ${alert.labels?.cluster || alert.labels?.kubernetes_cluster}` : null,
-          `Severity: ${getSeverity(alert.name, alert.severity).toUpperCase()}`,
-        ].filter(Boolean).join(" | ")
-      );
+      markDoneOnce();
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {
       const el = document.getElementById("laporkan-textarea");
       if (el) { el.select(); document.execCommand("copy"); }
       setCopied(true);
-      onEskalasi(alert._key, alert);
+      markDoneOnce();
       setTimeout(() => setCopied(false), 2000);
     });
   };
@@ -1301,8 +1312,9 @@ export default function AlertPage() {
       {modal && (
         <LaporkanModal
           alert={modal}
+          alreadyEskalasi={eskalasi.has(modal._key)}
           onClose={() => setModal(null)}
-          onEskalasi={key => { markEskalasi(key); }}/>
+          onEskalasi={(key, a) => { markEskalasi(key, a); }}/>
       )}
 
       {/* ── Daily Report Modal ── */}
