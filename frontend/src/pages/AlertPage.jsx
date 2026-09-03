@@ -991,6 +991,10 @@ async function syncAlertsToDailyTask(alerts) {
       detail:      `Ticket: ${ticket}\nSeverity: ${a.severity || "-"}\nDuration: ${fmtDur(a.duration_min)}\nSince: ${fmtTime(a.active_at)}\nFolder: ${folder}`,
       createdAt:   new Date().toISOString(),
     });
+    // Same reasoning as the auto-close log below — without this,
+    // "Tasks Created" in Engineer Activity KPI undercounts alert-generated
+    // tasks because it only reads the activity log, not /api/tasks directly.
+    logActivity("Create Task", "task", `[${folder}] ${desc}`);
     recordTicketCreated(key);
     newKeys.add(key);
     added++;
@@ -1014,6 +1018,10 @@ async function syncAlertsToDailyTask(alerts) {
         end:    new Date().toLocaleTimeString("id-ID", { hour:"2-digit", minute:"2-digit" }),
         detail: (t.detail || "") + `\n\nResolved: ${new Date().toLocaleString("id-ID")}`,
       });
+      // Auto-close by the alert sync must also be recorded, otherwise
+      // Engineer Activity KPI's "Tasks Closed" undercounts — it only reads
+      // from the activity log, not from task status directly.
+      logActivity("Update Task Status", "task", `${t.description} → Close`);
       resolved++;
     }
   }
