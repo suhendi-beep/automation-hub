@@ -28,6 +28,16 @@ def load_cookies(driver, url="https://cloud.oracle.com"):
     return True
 
 
+def save_cookies_raw(cookies):
+    """Save a list of cookie dicts (e.g. pasted from the EditThisCookie
+    Chrome extension) directly, without needing a live Selenium driver."""
+    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+    data = {"saved_at": datetime.now().isoformat(), "cookies": cookies}
+    with open(COOKIE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+    return len(cookies)
+
+
 def cookies_exist():
     return os.path.exists(COOKIE_FILE)
 

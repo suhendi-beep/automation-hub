@@ -11,6 +11,9 @@ import ReminderNotif from "./components/ReminderNotif.jsx";
 import AlertWatcher  from "./components/AlertWatcher.jsx";
 import "./styles.css";
 
+// Auto-logout after this many ms of no user activity (mouse/keyboard/click/scroll).
+const IDLE_LOGOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
+
 export default function App() {
   // ── One-time cleanup of old localStorage keys (task data now lives in backend) ──
   React.useEffect(() => {
@@ -22,6 +25,44 @@ export default function App() {
       // karena masih dipakai untuk tracking nomor ticket alert
     ];
     KEYS_TO_CLEAR.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+  }, []);
+
+  // ── Idle auto-logout: if there is no user activity for IDLE_LOGOUT_MS,
+  // clear the session and force back to the login screen. ──
+  React.useEffect(() => {
+    if (!sessionStorage.getItem("pr_auth")) return;
+
+    let idleTimer = null;
+
+    const doLogout = () => {
+      const u = sessionStorage.getItem("pr_user");
+      const d = sessionStorage.getItem("pr_display");
+      if (u) {
+        fetch("/api/activity", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: u, display: d || u, action: "Logout", category: "auth", detail: "Auto-logout after 3h idle" }),
+        }).catch(() => {});
+      }
+      sessionStorage.removeItem("pr_auth");
+      sessionStorage.removeItem("pr_user");
+      sessionStorage.removeItem("pr_display");
+      sessionStorage.removeItem("pr_role");
+      window.location.reload();
+    };
+
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(doLogout, IDLE_LOGOUT_MS);
+    };
+
+    const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "click"];
+    activityEvents.forEach(ev => window.addEventListener(ev, resetIdleTimer, { passive: true }));
+    resetIdleTimer();
+
+    return () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      activityEvents.forEach(ev => window.removeEventListener(ev, resetIdleTimer));
+    };
   }, []);
   // ── Persist page state across browser refresh ──
   const [page,     setPage]     = useState(() => sessionStorage.getItem("pr_page") || "dashboard");
@@ -35,7 +76,11 @@ export default function App() {
   const [authed,   setAuthed]   = useState(!!sessionStorage.getItem("pr_auth"));
   const [fullCust, setFullCust] = useState(null);
   const [darkMode, setDarkMode] = useState(() => {
-    try { return localStorage.getItem("pr_theme") !== "light"; } catch { return true; }
+    try {
+      const saved = localStorage.getItem("pr_theme");
+      if (saved) return saved === "dark";
+      return false; // default: light theme ("MS Command Center" look)
+    } catch { return false; }
   });
   const currentUser = sessionStorage.getItem("pr_user")    || "admin";
   const currentRole = sessionStorage.getItem("pr_role")    || "admin";
@@ -153,38 +198,39 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
     <aside style={{...SB.root, borderColor:"var(--sidebar-border)"}} className="app-sidebar">
       {/* Logo */}
       <div style={{...SB.logoWrap, borderColor:"var(--sidebar-border)"}}>
-        <img src="/logo.svg" alt="ICS Compute"
-          style={{width:34,height:34,borderRadius:8,flexShrink:0}}/>
+        <div style={SB.logoMark}>
+          <HubIcon size={18}/>
+        </div>
         <div>
-          <div style={{...SB.logoName}}>PORTAL REPORT</div>
-          <div style={{...SB.logoSub}}>ICS Compute</div>
+          <div style={SB.logoName}>MS Command<br/>Center</div>
         </div>
       </div>
 
       {/* Main nav */}
       <nav style={SB.nav}>
         <NavItem icon={DashIcon}   label="Dashboard"       id="dashboard"       active={page==="dashboard"}       onClick={()=>navigate("dashboard")}/>
-        <NavItem icon={ReportIcon} label="Generate Report"  id="generate-report" active={page==="generate-report"} onClick={()=>navigate("generate-report")}/>
-        <NavItem icon={TaskIcon}   label="Daily Task"       id="daily-task"      active={page==="daily-task"}      onClick={()=>navigate("daily-task")}/>
-        <NavItem icon={AlertIcon}  label="Alert Monitor"    id="alert-monitor"   active={page==="alert-monitor"}   onClick={()=>navigate("alert-monitor")}/>
-        <NavItem icon={ActivityIcon} label="Engineer Activity" id="engineer-activity" active={page==="engineer-activity"} onClick={()=>navigate("engineer-activity")}/>
+        <NavItem icon={AlertIcon}  label="Grafana Alerts"  id="alert-monitor"   active={page==="alert-monitor"}   onClick={()=>navigate("alert-monitor")}/>
+        <NavItem icon={TaskIcon}   label="Daily Report"    id="daily-task"      active={page==="daily-task"}      onClick={()=>navigate("daily-task")}/>
+        <NavItem icon={ReportIcon} label="Weekly Reports"   id="generate-report" active={page==="generate-report"} onClick={()=>navigate("generate-report")}/>
+        <NavItem icon={LogIcon}    label="Reports History"  id="files"           active={page==="files"}           onClick={()=>navigate("files","pelindo")}/>
 
-        <div style={SB.sectionLabel}>MANAGEMENT</div>
+        <div style={SB.sectionLabel}>MORE</div>
+        <NavItem icon={ScheduleIcon} label="Schedules"      id="schedules"       active={page==="schedules"}       onClick={()=>navigate("schedules")}/>
+        <NavItem icon={SettingsIcon} label="Settings"       id="settings"        active={page==="settings"}        onClick={()=>navigate("settings")}/>
+        <NavItem icon={ActivityIcon} label="Engineer Activity" id="engineer-activity" active={page==="engineer-activity"} onClick={()=>navigate("engineer-activity")}/>
         <NavItem icon={CustomerIcon}  label="Customers"         id="customers"   active={page==="customers"}   onClick={()=>navigate("customers")}/>
         <NavItem icon={AccountIcon}   label="Accounts"          id="accounts"    active={page==="accounts"}    onClick={()=>navigate("accounts")}/>
         <NavItem icon={GrafanaIcon}   label="Grafana Dashboards" id="grafana"     active={page==="grafana"}     onClick={()=>navigate("grafana")}/>
         <NavItem icon={CredIcon}      label="Credentials"       id="credentials" active={page==="credentials"} onClick={()=>navigate("credentials")}/>
-        <NavItem icon={ScheduleIcon}  label="Schedules"         id="schedules"   active={page==="schedules"}   onClick={()=>navigate("schedules")}/>
         <NavItem icon={LogIcon}       label="Activity Logs"     id="logs-page"   active={page==="logs-page"}   onClick={()=>navigate("logs-page")}/>
-        <NavItem icon={SettingsIcon}  label="Settings"          id="settings"    active={page==="settings"}    onClick={()=>navigate("settings")}/>
       </nav>
 
       {/* Theme toggle */}
-      <div style={{padding:"8px 12px", borderTop:"1px solid var(--border)"}}>
+      <div style={{padding:"10px 12px", borderTop:"1px solid var(--sidebar-border)"}}>
         <button onClick={toggleDark}
           style={{width:"100%",display:"flex",alignItems:"center",gap:8,
             background:"var(--surface2)",border:"1px solid var(--border2)",
-            borderRadius:6,padding:"6px 10px",cursor:"pointer",
+            borderRadius:7,padding:"7px 10px",cursor:"pointer",
             fontFamily:"inherit",fontSize:11,color:"var(--muted)",transition:"all .2s"}}>
           <span style={{fontSize:13}}>{darkMode ? "🌙" : "☀️"}</span>
           <span style={{flex:1,textAlign:"left"}}>{darkMode ? "Dark Mode" : "Light Mode"}</span>
@@ -196,7 +242,7 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
       </div>
 
       {/* OCI status */}
-      <div style={{...SB.ociBar, borderColor:"var(--border)"}} onClick={()=>setShowOci(true)}>
+      <div style={{...SB.ociBar, borderColor:"var(--sidebar-border)"}} onClick={()=>setShowOci(true)}>
         <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
           background: ociSess?.logged_in ? "#22C55E" : "var(--muted2)",
           boxShadow:  ociSess?.logged_in ? "0 0 8px #22C55E" : "none"}}/>
@@ -238,38 +284,38 @@ function NavItem({ icon: Icon, label, id, active, onClick }) {
 }
 
 const SB = {
-  root:        {width:200,borderRight:"1px solid var(--sidebar-border)",
+  root:        {width:220,borderRight:"1px solid var(--sidebar-border)",
                 display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden",
                 transition:"background .25s"},
-  logoWrap:    {display:"flex",alignItems:"center",gap:10,padding:"16px 16px 13px",
+  logoWrap:    {display:"flex",alignItems:"center",gap:10,padding:"18px 16px 15px",
                 borderBottom:"1px solid var(--sidebar-border)"},
-  logoHex:     {width:34,height:34,borderRadius:8,background:"#B11226",
+  logoMark:    {width:34,height:34,borderRadius:9,background:"#B11226",
                 display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
-                boxShadow:"0 0 12px rgba(177,18,38,.4)"},
-  logoName:    {fontSize:11,fontWeight:700,letterSpacing:".06em",color:"var(--text)"},
+                color:"#fff",boxShadow:"0 2px 10px rgba(177,18,38,.35)"},
+  logoName:    {fontSize:13,fontWeight:700,letterSpacing:"-.01em",color:"var(--text)",
+                lineHeight:1.2},
   logoSub:     {fontSize:9,color:"var(--muted)",marginTop:1},
-  nav:         {flex:1,padding:"6px 10px",overflowY:"auto"},
+  nav:         {flex:1,padding:"10px 10px",overflowY:"auto"},
   sectionLabel:{fontSize:8,fontWeight:700,letterSpacing:".15em",color:"var(--muted3)",
-                padding:"14px 8px 4px",textTransform:"uppercase"},
-  navBtn:      {display:"flex",alignItems:"center",gap:9,width:"100%",background:"none",
-                border:"none",color:"var(--muted)",fontFamily:"inherit",fontSize:11,
-                padding:"7px 8px",borderRadius:6,cursor:"pointer",textAlign:"left",
-                transition:"all .12s"},
-  navBtnActive:{background:"#B11226",color:"#FFFFFF",boxShadow:"0 2px 8px rgba(177,18,38,.4)"},
+                padding:"16px 8px 6px",textTransform:"uppercase"},
+  navBtn:      {display:"flex",alignItems:"center",gap:10,width:"100%",background:"none",
+                border:"none",color:"var(--muted)",fontFamily:"inherit",fontSize:12,
+                fontWeight:500,padding:"9px 10px",borderRadius:8,cursor:"pointer",
+                textAlign:"left",transition:"all .12s"},
+  navBtnActive:{background:"#B11226",color:"#FFFFFF",boxShadow:"0 2px 10px rgba(177,18,38,.35)"},
   navBtnHover: {background:"var(--surface2)",color:"var(--text4)"},
-  illustBox:   {padding:"0 0 0 0",borderTop:"1px solid var(--border)",overflow:"hidden"},
-  illustText:  {fontSize:11,color:"var(--muted)",padding:"0 16px 1px",fontStyle:"italic"},
-  illustAccent:{fontSize:12,fontWeight:700,color:"#B11226",padding:"0 16px 10px"},
-  ociBar:      {display:"flex",alignItems:"center",gap:7,padding:"8px 14px",
-                borderTop:"1px solid var(--border)",cursor:"pointer"},
+
+  ociBar:      {display:"flex",alignItems:"center",gap:7,padding:"9px 14px",
+                borderTop:"1px solid var(--sidebar-border)",cursor:"pointer"},
   userRow:     {display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
-                borderTop:"1px solid var(--border)"},
+                borderTop:"1px solid var(--sidebar-border)"},
   userAvatar:  {width:30,height:30,borderRadius:"50%",background:"#B11226",
                 color:"#fff",fontSize:11,fontWeight:700,display:"flex",
                 alignItems:"center",justifyContent:"center",flexShrink:0},
 };
 
 /* ── Icons ── */
+function HubIcon({size=18})      { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="1.8" fill="currentColor" stroke="none"/><circle cx="8" cy="2.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="13" cy="11" r="1.3" fill="currentColor" stroke="none"/><circle cx="3" cy="11" r="1.3" fill="currentColor" stroke="none"/><path d="M8 4v2.2M9.5 9.1l2.3 1.4M6.5 9.1l-2.3 1.4"/></svg>; }
 function DashIcon({size=14})     { return <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>; }
 function ReportIcon({size=14})   { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="1.5" width="12" height="13" rx="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="10.5" x2="8" y2="10.5"/></svg>; }
 function TaskIcon({size=14})     { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><polyline points="5,8 7,10 11,6"/></svg>; }

@@ -1,5 +1,23 @@
-import React, { useState, useEffect, useRef } from "react";
+﻿import React, { useState, useEffect, useRef } from "react";
+
 import { logActivity } from "../activityLog.js";
+
+/* â”€â”€ WIB time helper â”€â”€ */
+function timeNowWIB() {
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta",
+    hour:     "2-digit",
+    minute:   "2-digit",
+  }).format(new Date());
+}
+function todayWIB() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year:  "numeric",
+    month: "2-digit",
+    day:   "2-digit",
+  }).format(new Date());
+}
 
 const FILE_FILTER = {
   grafana_capture:       n => n.includes("grafana") && !n.includes("agustus") && !n.includes("week"),
@@ -7,7 +25,6 @@ const FILE_FILTER = {
   oci_ilcs_backup:       n => n.includes("ilcs") && !n.includes("status"),
   oci_pelindo_backup:    n => n.includes("oci_pelindo"),
   daily_ilcs_status:     n => n.includes("status") || n.includes("daily"),
-  nikp_monthly_report:   n => n.includes("nikp"),
 };
 
 function fmtSize(kb) {
@@ -25,11 +42,11 @@ export default function GenerateReport({ customers, navigate }) {
   const [selCust,   setSelCust]   = useState("");
   const [selAuto,   setSelAuto]   = useState("");
   const [args,      setArgs]      = useState({});
-  const [credModal, setCredModal] = useState(false);
-  const [creds,     setCreds]     = useState({tenancy:"",username:"",password:""});
   const [otpModal,  setOtpModal]  = useState(false);
   const [otp,       setOtp]       = useState("");
   const [taskId,    setTaskId]    = useState(null);
+  const [dailyTaskId, setDailyTaskId] = useState(null);
+  const [otpSubmitted, setOtpSubmitted] = useState(false);
   const [step,      setStep]      = useState("idle");
   const [logLines,  setLogLines]  = useState([]);
   const [allFiles,  setAllFiles]  = useState([]);
@@ -111,9 +128,27 @@ export default function GenerateReport({ customers, navigate }) {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logLines]);
 
-  // Poll when running
+  // Poll Live Log immediately when Generate Report starts
   useEffect(() => {
-    if (!taskId || step==="done" || step==="error" || step==="idle") return;
+    if (step !== "running") return;
+    const pollLogs = async () => {
+      try {
+        if (selCust && selAuto) {
+          const d = await fetch(`/api/logs/${selCust}/${selAuto}`).then(r=>r.json());
+          if (d.logs) setLogLines(d.logs);
+        }
+      } catch (_) {}
+    };
+
+    pollLogs();
+    const iv = setInterval(pollLogs, 1000);
+
+    return () => clearInterval(iv);
+  }, [step, selCust, selAuto]);
+
+  // Poll task status while running
+  useEffect(() => {
+    if (!taskId || step !== "running") return;
     const iv = setInterval(async()=>{
       try {
         if (selCust && selAuto) {
@@ -122,19 +157,48 @@ export default function GenerateReport({ customers, navigate }) {
         }
         const st = await fetch("/api/status/"+taskId).then(r=>r.json());
         if (st.status==="SUCCESS") {
-          setStep("done"); clearInterval(iv); loadFiles(selCust);
+          if (dailyTaskId) {
+            try {
+              await fetch("/api/tasks/" + dailyTaskId, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({status: "Close", end: timeNowWIB()})
+              });
+            } catch (_) {}
+          }
+          setStep("done"); clearInterval(iv);
+          // Refresh output files beberapa kali untuk menghindari race
+          // antara Celery selesai menulis file dan API file listing.
+          await loadFiles(selCust);
+          if (selAuto === "grafana_weekly_report") {
+            setTimeout(() => loadFiles(selCust), 500);
+            setTimeout(() => loadFiles(selCust), 1500);
+            setTimeout(() => loadFiles(selCust), 3000);
+          } else {
+            setTimeout(() => loadFiles(selCust), 1000);
+            setTimeout(() => loadFiles(selCust), 3000);
+          }
           logActivity(
             "Generate Report",
             "report",
             `${auto?.name || selAuto} | Customer: ${selCust} | ${new Date().toISOString().slice(0,10)}`
           );
         } else if (st.status==="FAILURE") {
+          if (dailyTaskId) {
+            try {
+              await fetch("/api/tasks/" + dailyTaskId, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({status: "Cancelled", end: timeNowWIB()})
+              });
+            } catch (_) {}
+          }
           setStep("error"); clearInterval(iv);
         }
         // Poll OCI login state for creds flow
         if (auto?.requires_oci_credentials) {
           const ls = await fetch("/api/oci/login_state/"+taskId).then(r=>r.json());
-          if (ls.state==="otp_required" && !otpModal) setOtpModal(true);
+          if (ls.state==="otp_required" && !otpModal && !otpSubmitted) setOtpModal(true);
           else if (["running","success"].includes(ls.state)) setOtpModal(false);
           else if (ls.state==="error") { setStep("error"); clearInterval(iv); }
         }
@@ -144,39 +208,65 @@ export default function GenerateReport({ customers, navigate }) {
   }, [taskId, step]);
 
   const handleGenerate = async () => {
+    // Jangan izinkan Generate Report baru jika masih ada proses berjalan.
+    if (step === "running") return;
     if (!selCust||!selAuto) return;
-    if (auto?.requires_oci_credentials && (!creds.username||!creds.password)) {
-      setCredModal(true); return;
-    }
+    setOtpSubmitted(false);
     setStep("running"); setLogLines([]);
+    setDailyTaskId(null);
     try {
-      let d;
-      if (auto?.requires_oci_credentials) {
-        const body = {customer:selCust,automation:selAuto,args,...creds};
-        d = await fetch("/api/run_with_credentials",{method:"POST",
-          headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json());
-      } else {
-        d = await fetch("/api/run",{method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({customer:selCust,automation:selAuto,args})}).then(r=>r.json());
-        if (d.need_credentials) { setStep("idle"); setCredModal(true); return; }
+      // Buat Daily Task saat Generate Report dimulai.
+      const taskResp = await fetch("/api/tasks", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          customer: selCust,
+          description: auto?.name || selAuto,
+          detail: auto?.name || selAuto,
+          date: todayWIB(),
+          start: timeNowWIB(),
+          pic: sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "",
+          status: "In Progress",
+          generateReport: true
+        })
+      });
+
+      if (!taskResp.ok) {
+        const errText = await taskResp.text();
+        throw new Error(`Create Daily Task failed: ${taskResp.status} ${errText}`);
       }
-      if (d.task_id) setTaskId(d.task_id);
-      else { setStep("error"); }
+
+      const taskData = await taskResp.json();
+      if (!taskData.id) {
+        throw new Error("Create Daily Task returned no task id");
+      }
+
+      setDailyTaskId(taskData.id);
+
+      const d = await fetch("/api/run",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({customer:selCust,automation:selAuto,args,manual_generate:true})}).then(r=>r.json());
+      setOtpSubmitted(false);
+
+      if (d.task_id) {
+        setTaskId(d.task_id);
+        try {
+          const lg = await fetch(`/api/logs/${selCust}/${selAuto}`).then(r=>r.json());
+          if (lg.logs) setLogLines(lg.logs);
+        } catch (_) {}
+      } else { setStep("error"); }
     } catch(e) { setStep("error"); }
   };
 
-  const handleCredSubmit = () => { setCredModal(false); handleGenerate(); };
   const handleOtpSubmit  = async () => {
     await fetch("/api/oci/otp",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({task_id:taskId,otp})});
-    setOtpModal(false); setOtp("");
+    setOtpModal(false); setOtp(""); setOtpSubmitted(true);
   };
 
   // Files filtered for selected automation
-  const autoFiles = selAuto
-    ? allFiles.filter(f => (FILE_FILTER[selAuto]||((n)=>false))(f.name.toLowerCase()))
-    : allFiles;
+  // Show ALL files - no filter to prevent files from disappearing
+  const autoFiles = allFiles;
 
   const logColor = (l) => {
     if (/error|fail|FAIL/i.test(l))             return "#F87171";
@@ -238,27 +328,11 @@ export default function GenerateReport({ customers, navigate }) {
             <div key={arg.key} style={G.field}>
               <label style={G.label}>{arg.label.toUpperCase()}</label>
               <input type={arg.type||"text"} style={G.input}
-                value={args[arg.key]||arg.default||(arg.type==="date"?today:"")}
+                value={args[arg.key]||arg.default||(arg.type==="date"?today:arg.type==="month"?today.slice(0,7):"")}
                 onChange={e=>setArgs(p=>({...p,[arg.key]:e.target.value}))}
                 placeholder={arg.label}/>
             </div>
           ))}
-
-          {/* OCI credentials notice */}
-          {auto?.requires_oci_credentials && (
-            <div style={G.credBox}>
-              <span style={{fontSize:16}}>🔑</span>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:11,fontWeight:600,color:"var(--text2)"}}>OCI Credentials Required</div>
-                <div style={{fontSize:10,color:"var(--muted)",marginTop:1}}>
-                  {creds.username ? `Configured: ${creds.username}` : "Not configured yet"}
-                </div>
-              </div>
-              <button style={G.credBtn} onClick={()=>setCredModal(true)}>
-                {creds.username?"✓ Edit":"Set"}
-              </button>
-            </div>
-          )}
 
           {/* Auto info box */}
           {auto && (
@@ -299,7 +373,7 @@ export default function GenerateReport({ customers, navigate }) {
           </button>
 
           {(step==="done"||step==="error") && (
-            <button style={G.resetBtn} onClick={()=>{ setStep("idle"); setTaskId(null); }}>
+            <button style={G.resetBtn} onClick={()=>{ setStep("idle"); setTaskId(null); setOtpSubmitted(false); }}>
               ← New Report
             </button>
           )}
@@ -308,7 +382,7 @@ export default function GenerateReport({ customers, navigate }) {
         {/* ── COL 2: Output Files (Kotak 1) ── */}
         <div style={G.filesCol}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexShrink:0}}>
-            <div style={G.sectionLabel} style={{margin:0}}>OUTPUT FILES</div>
+            <div style={{...G.sectionLabel, margin:0}}>OUTPUT FILES</div>
             {selCust&&(
               <button style={G.smallBtn} onClick={loadFiles}>↻</button>
             )}
@@ -364,7 +438,7 @@ export default function GenerateReport({ customers, navigate }) {
                         </span>
                       </div>
                     </div>
-                    <a href={"/api/download/reports/"+f.name} download={f.name}
+                    <a href={f.download||("/api/download/reports/"+f.name)} download={f.name}
                       style={{flexShrink:0,background:"#B11226",color:"#fff",
                         border:"none",fontSize:10,fontWeight:600,
                         padding:"5px 12px",borderRadius:5,textDecoration:"none",
@@ -445,34 +519,6 @@ export default function GenerateReport({ customers, navigate }) {
         </div>
       </div>
 
-      {/* ── OCI Credentials Modal ── */}
-      {credModal && (
-        <div className="modal-overlay" onClick={()=>setCredModal(false)}>
-          <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-header">
-              <span>🔑 OCI Credentials</span>
-              <button className="modal-close" onClick={()=>setCredModal(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <p className="modal-note">Enter OCI login credentials for <strong style={{color:"var(--text2)"}}>{auto?.name}</strong></p>
-              <label className="form-label">Tenancy Name</label>
-              <input className="form-input" value={creds.tenancy}
-                onChange={e=>setCreds(p=>({...p,tenancy:e.target.value}))} placeholder="tenancy-name"/>
-              <label className="form-label" style={{marginTop:10}}>Username / Email</label>
-              <input className="form-input" value={creds.username}
-                onChange={e=>setCreds(p=>({...p,username:e.target.value}))} placeholder="user@email.com"/>
-              <label className="form-label" style={{marginTop:10}}>Password</label>
-              <input className="form-input" type="password" value={creds.password}
-                onChange={e=>setCreds(p=>({...p,password:e.target.value}))} placeholder="••••••••"/>
-              <button className="btn-primary" style={{marginTop:14}} onClick={handleCredSubmit}
-                disabled={!creds.username||!creds.password}>
-                ▶ Generate with Credentials
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── OTP Modal ── */}
       {otpModal && (
         <div className="modal-overlay">
@@ -520,12 +566,6 @@ const G = {
   input:     {background:"var(--surface2)",border:"1px solid var(--border2)",color:"var(--text)",
               fontFamily:"inherit",fontSize:12,padding:"9px 12px",borderRadius:7,
               outline:"none",transition:"border-color .15s"},
-  credBox:   {display:"flex",alignItems:"center",gap:9,padding:"10px 11px",
-              background:"rgba(245,158,11,.05)",border:"1px solid rgba(245,158,11,.18)",
-              borderRadius:7},
-  credBtn:   {background:"rgba(245,158,11,.1)",color:"#FBBF24",border:"1px solid rgba(245,158,11,.25)",
-              fontFamily:"inherit",fontSize:10,fontWeight:600,padding:"4px 10px",
-              borderRadius:5,cursor:"pointer",flexShrink:0},
   infoBox:   {background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,padding:"11px"},
   tag:       {fontSize:9,fontWeight:600,padding:"2px 7px",borderRadius:3,
               background:"var(--surface2)",color:"var(--muted)",border:"1px solid var(--border)"},

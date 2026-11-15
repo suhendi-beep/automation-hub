@@ -3,20 +3,16 @@ import React, { useState, useEffect } from "react";
 // Map automation ID → folder name
 const FOLDER_MAP = {
   grafana_capture:    "Weekly Capture Grafana HO",
-  grafana_capture_all:"Monthly Capture Grafana ALL",
   oci_ilcs_backup:    "Weekly Backup Report OCI ILCS",
   oci_pelindo_backup: "Weekly Backup Report OCI Pelindo",
   daily_ilcs_status:  "Daily Backup Status ILCS",
-  nikp_monthly_report:"Monthly Report NIKP",
 };
 
 const FILE_FILTER = {
-  grafana_capture:    n => n.includes("grafana") && !n.includes("_all_"),
-  grafana_capture_all:n => n.includes("grafana_all") || (n.includes("grafana") && n.endsWith(".zip")),
-  oci_ilcs_backup:    n => n.includes("ilcs") && !n.includes("status"),
+  grafana_capture:    n => n.includes("grafana"),
+  oci_ilcs_backup:    n => n.includes("oci_ilcs") || (n.includes("ilcs") && !n.includes("status")),
   oci_pelindo_backup: n => n.includes("oci_pelindo"),
   daily_ilcs_status:  n => n.includes("status") || n.includes("daily"),
-  nikp_monthly_report:n => n.includes("nikp"),
 };
 
 function fileIcon(name) {
