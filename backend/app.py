@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -61,6 +62,15 @@ GRAFANA_BASE_URL = (
 ).rstrip("/")
 GRAFANA_USER = os.getenv("GRAFANA_USER", "")
 GRAFANA_PASS = os.getenv("GRAFANA_PASS", "")
+
+# Alert bersumber dari Prometheus/Alertmanager data source ini tidak muncul di
+# endpoint Alertmanager bawaan Grafana, jadi harus diambil per data source.
+GRAFANA_PROM_DATASOURCES = [
+    ("OCI-ILCS", "bdy31xghxyh34d"),
+    ("OCI-HO",   "deyx07ukt7nk0e"),
+    ("GCP",      "eey4rwzgb9ibke"),
+    ("Huawei",   "eey51w20ssn40e"),
+]
 
 # Throttle repeated Grafana failure logs (the frontend polls every 30s).
 _grafana_last_error = None
@@ -560,6 +570,71 @@ def _grafana_severity_from_labels(labels):
     return "info"
 
 
+def _norm_ts(value):
+    if not value:
+        return value
+    return re.sub(r"(\.\d{3})\d*(?=Z|[+-]\d{2}:\d{2}$)", r"\1", value)
+
+
+def _alert_key(name, resource, active_at):
+    try:
+        started = datetime.fromisoformat(_norm_ts(active_at).replace("Z", "+00:00"))
+        return (name, resource, int(started.timestamp()) // 60)
+    except Exception:
+        return (name, resource, active_at)
+
+
+def _fetch_prometheus_alerts(now):
+    if not (GRAFANA_USER and GRAFANA_PASS):
+        return []
+
+    def fetch(ds):
+        folder, uid = ds
+        url = f"{GRAFANA_BASE_URL}/api/datasources/proxy/uid/{uid}/api/v1/alerts"
+        try:
+            r = requests.get(url, auth=(GRAFANA_USER, GRAFANA_PASS), timeout=8)
+            r.raise_for_status()
+            data = r.json() or {}
+            return folder, (data.get("data") or {}).get("alerts") or []
+        except Exception as e:
+            log.warning("Grafana datasource alerts %s gagal: %s", folder, e)
+            return folder, []
+
+    result = []
+    with ThreadPoolExecutor(max_workers=len(GRAFANA_PROM_DATASOURCES)) as ex:
+        for folder, items in ex.map(fetch, GRAFANA_PROM_DATASOURCES):
+            for item in items:
+                state = (item.get("state") or "").lower()
+                if state not in ("firing", "pending"):
+                    continue
+                labels = item.get("labels") or {}
+                resource = (
+                    labels.get("instance") or labels.get("nodename") or
+                    labels.get("hostname") or labels.get("resourceName") or "-"
+                )
+                active_at = item.get("activeAt")
+                duration_min = 0
+                if active_at:
+                    try:
+                        started = datetime.fromisoformat(
+                            _norm_ts(active_at).replace("Z", "+00:00"))
+                        duration_min = max(0, int((now - started).total_seconds() // 60))
+                    except Exception:
+                        duration_min = 0
+                result.append({
+                    "name":         labels.get("alertname", "Unknown Alert"),
+                    "folder":       folder,
+                    "severity":     _grafana_severity_from_labels(labels),
+                    "resource":     resource,
+                    "labels":       labels,
+                    "annotations":  item.get("annotations") or {},
+                    "active_at":    _norm_ts(active_at),
+                    "duration_min": duration_min,
+                    "state":        state,
+                })
+    return result
+
+
 def fetch_grafana_alerts():
     if not GRAFANA_USER or not GRAFANA_PASS:
         raise RuntimeError("Grafana credentials are not configured")
@@ -576,6 +651,7 @@ def fetch_grafana_alerts():
 
     now = datetime.now(timezone.utc)
     alerts = []
+    seen = set()
     for item in raw:
         labels = item.get("labels", {}) or {}
         annotations = item.get("annotations", {}) or {}
@@ -607,6 +683,16 @@ def fetch_grafana_alerts():
             "duration_min": duration_min,
             "state":        "NoData" if labels.get("alertname", "").lower() == "datasourcenodata" else state,
         })
+        seen.add(_alert_key(alerts[-1]["name"], resource, starts_at))
+
+    # Alert dari Prometheus/Alertmanager data source (tidak terlihat oleh
+    # endpoint Alertmanager bawaan Grafana di atas).
+    for a in _fetch_prometheus_alerts(now):
+        key = _alert_key(a["name"], a["resource"], a["active_at"])
+        if key in seen:
+            continue
+        seen.add(key)
+        alerts.append(a)
     return alerts
 
 
