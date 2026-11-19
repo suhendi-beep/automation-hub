@@ -27,8 +27,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 
 GRAFANA_BASE  = os.getenv("GRAFANA_URL",  "https://monitoring.ilcs.co.id")
-GRAFANA_USER  = os.getenv("GRAFANA_USER", "icscompute")
-GRAFANA_PASS  = os.getenv("GRAFANA_PASS", "icsW4tch!")
+GRAFANA_USER  = os.getenv("GRAFANA_USER", "")
+GRAFANA_PASS  = os.getenv("GRAFANA_PASS", "")
+
+if not GRAFANA_USER or not GRAFANA_PASS:
+    raise RuntimeError("GRAFANA_USER/GRAFANA_PASS belum dikonfigurasi (set via SSM atau env)")
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "grafana_config_all.json")
 

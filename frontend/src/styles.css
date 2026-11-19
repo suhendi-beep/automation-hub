@@ -35,6 +35,8 @@
   --maroon3:     #7F0D1B;
   --maroon-dim:  rgba(177,18,38,.12);
   --maroon-glow: rgba(177,18,38,.25);
+  --accent:      #E23F52;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.45);
 
   --green:       #22C55E;
   --green-dim:   rgba(34,197,94,.12);
@@ -82,6 +84,8 @@ body.light {
 
   --maroon-dim:  rgba(177,18,38,.08);
   --maroon-glow: rgba(177,18,38,.10);
+  --accent:      #B11226;
+  --shadow-card: 0 1px 2px rgba(15,23,36,.04);
 
   --green-dim:   rgba(34,197,94,.10);
   --red-dim:     rgba(239,68,68,.10);

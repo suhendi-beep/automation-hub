@@ -83,15 +83,15 @@ DATABASES_ILCS = [
     ("dtosdev",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyans2x7fc7ecq72o3we332spvcgfvho7h5cp63vhrh4kzq"),
     ("dbrepo",    "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyav2ts5za64g73ujvj6lybgfbqysmg3h6ofdxf3v6dytdq"),
     ("dbstag",    "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyajeqrtpzm5zymbljwia5r2y4v3ocesndcz66tihk2g6uq"),
-    ("DBTOSQA",   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyad4tlxuiagninoqgmydko7m7fovkq4bruuochsh2mwv7q"),
+    ("DBTOSQA",   "ocid1.database.oc1.ap-batam-1.anrguljrp7dotcyarw2rdrvuwutynmljuv4ongv6tuz4l5l3daqgaa3fuasq"),
 ]
 
 DATABASES_PELINDO = [
     ("madra",   "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2riascm3p7rdbzg2zstlpcnuoqc5an3ws45zhhhibuoyrfnq"),
     ("pancala", "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2rialxqd3rdpby5yajtlou4l2kv4kxrb6scs74ri6ooplfwq"),
     ("hastina", "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2riawsduojbdiodiple5urxg3yiwyck3jq6jwvvsfl4bwbfa"),
-    ("ayodya",  "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2riakgo4g2zqxofwj5pdlkrtylezwceoakyzohdzy3jtpt6q"),
-    ("alengka", "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2riapgn55d3g5laxum5jsdcbwchfzagho3hjpjhctst4d3lq"),
+    ("ayodya",  "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2ria6bwynp2yvjb2zjx7utw72nqwsdvbccjdxo47bgkdhfva"),
+    ("alengka", "ocid1.database.oc1.ap-batam-1.anrguljrgw2c2riawkx5gunctemy7brh3jn4gp27vyg4xb2iz5q4cisgwnpa"),
     ("devpeo",  "ocid1.database.oc1.ap-singapore-1.anzwsljrgw2c2riaa6mqhng54s4cv2evjihbxeahqsx4y7djwhe44mekorua"),
 ]
 
@@ -172,7 +172,7 @@ def run(log_path=None, args=None):
     ]:
         log(f"\n=== DATABASE BACKUP CHECK ({label}) ===")
         for db_name, db_ocid in databases:
-            region = "ap-batam-1" if db_name.lower() == "pptospk" else "ap-singapore-1"
+            region = "ap-batam-1" if db_name.lower() in ("pptospk", "dbtosqa", "alengka") else "ap-singapore-1"
             log(f"Checking: {db_name}")
             cmd    = f"oci db backup list --profile {profile} --database-id {db_ocid} --region {region} --all"
             output = _run_cmd(cmd, log)

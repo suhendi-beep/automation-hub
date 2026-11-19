@@ -7,8 +7,17 @@ import FilesPage    from "./pages/FilesPage.jsx";
 import LoginPage    from "./pages/LoginPage.jsx";
 import AlertPage    from "./pages/AlertPage.jsx";
 import EngineerActivity from "./pages/EngineerActivity.jsx";
+import CustomersPage from "./pages/CustomersPage.jsx";
+import AccountsPage from "./pages/AccountsPage.jsx";
+import GrafanaPage from "./pages/GrafanaPage.jsx";
+import CredentialsPage from "./pages/CredentialsPage.jsx";
+import SchedulesPage from "./pages/SchedulesPage.jsx";
+import ActivityLogsPage from "./pages/ActivityLogsPage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
 import ReminderNotif from "./components/ReminderNotif.jsx";
 import AlertWatcher  from "./components/AlertWatcher.jsx";
+import OciModal from "./components/OciModal.jsx";
+import { clearSession } from "./api.js";
 import "./styles.css";
 
 // Auto-logout after this many ms of no user activity (mouse/keyboard/click/scroll).
@@ -27,10 +36,35 @@ export default function App() {
     KEYS_TO_CLEAR.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
   }, []);
 
-  // ── Idle auto-logout: if there is no user activity for IDLE_LOGOUT_MS,
-  // clear the session and force back to the login screen. ──
+  // ── Persist page state across browser refresh ──
+  const [page,     setPage]     = useState(() => sessionStorage.getItem("pr_page") || "dashboard");
+  const [custId,   setCustId]   = useState(() => sessionStorage.getItem("pr_custid") || null);
+  const [customers,setCustomers]= useState([]);
+  const [ociSess,  setOciSess]  = useState(null);
+  const [running,  setRunning]  = useState({});
+  const [statuses, setStatuses] = useState({});
+  const [logs,     setLogs]     = useState({});
+  const [activeLog,setActiveLog]= useState(null);
+  const [authed,   setAuthed]   = useState(() => !!(sessionStorage.getItem("pr_auth") && sessionStorage.getItem("pr_token")));
+  const [fullCust, setFullCust] = useState(null);
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      // One-time reset: every page now shares the same theme, defaulting to
+      // the light "Portal Report" look. User choice is kept after this.
+      if (localStorage.getItem("pr_theme_v") !== "v2") {
+        localStorage.setItem("pr_theme", "light");
+        localStorage.setItem("pr_theme_v", "v2");
+      }
+      return localStorage.getItem("pr_theme") === "dark";
+    } catch { return false; }
+  });
+  const currentUser = sessionStorage.getItem("pr_user")    || "admin";
+  const currentRole = sessionStorage.getItem("pr_role")    || "engineer";
+  const displayName = sessionStorage.getItem("pr_display") || currentUser;
+
+  // ── Idle auto-logout: no user activity for IDLE_LOGOUT_MS → sign out. ──
   React.useEffect(() => {
-    if (!sessionStorage.getItem("pr_auth")) return;
+    if (!authed) return;
 
     let idleTimer = null;
 
@@ -43,11 +77,7 @@ export default function App() {
           body: JSON.stringify({ username: u, display: d || u, action: "Logout", category: "auth", detail: "Auto-logout after 3h idle" }),
         }).catch(() => {});
       }
-      sessionStorage.removeItem("pr_auth");
-      sessionStorage.removeItem("pr_user");
-      sessionStorage.removeItem("pr_display");
-      sessionStorage.removeItem("pr_role");
-      window.location.reload();
+      clearSession();
     };
 
     const resetIdleTimer = () => {
@@ -63,28 +93,7 @@ export default function App() {
       if (idleTimer) clearTimeout(idleTimer);
       activityEvents.forEach(ev => window.removeEventListener(ev, resetIdleTimer));
     };
-  }, []);
-  // ── Persist page state across browser refresh ──
-  const [page,     setPage]     = useState(() => sessionStorage.getItem("pr_page") || "dashboard");
-  const [custId,   setCustId]   = useState(() => sessionStorage.getItem("pr_custid") || null);
-  const [customers,setCustomers]= useState([]);
-  const [ociSess,  setOciSess]  = useState(null);
-  const [running,  setRunning]  = useState({});
-  const [statuses, setStatuses] = useState({});
-  const [logs,     setLogs]     = useState({});
-  const [activeLog,setActiveLog]= useState(null);
-  const [authed,   setAuthed]   = useState(!!sessionStorage.getItem("pr_auth"));
-  const [fullCust, setFullCust] = useState(null);
-  const [darkMode, setDarkMode] = useState(() => {
-    try {
-      const saved = localStorage.getItem("pr_theme");
-      if (saved) return saved === "dark";
-      return false; // default: light theme ("MS Command Center" look)
-    } catch { return false; }
-  });
-  const currentUser = sessionStorage.getItem("pr_user")    || "admin";
-  const currentRole = sessionStorage.getItem("pr_role")    || "admin";
-  const displayName = sessionStorage.getItem("pr_display") || currentUser;
+  }, [authed]);
 
   // Apply theme class to <body> whenever darkMode changes
   useEffect(() => {
@@ -136,9 +145,13 @@ export default function App() {
         {page==="engineer-activity" && <EngineerActivity navigate={navigate}/>}
         {page==="customer"  && custId && <CustomerPage customerId={custId} navigate={navigate} ociSession={ociSess} running={running} setRunning={setRunning} statuses={statuses} setStatuses={setStatuses} logs={logs} setLogs={setLogs} activeLog={activeLog} setActiveLog={setActiveLog} darkMode={darkMode}/>}
         {page==="files"     && custId && <FilesPage customer={fullCust} navigate={navigate} darkMode={darkMode}/>}
-        {["customers","accounts","grafana","credentials","schedules","logs-page","settings"].includes(page) && (
-          <ComingSoon page={page} navigate={navigate}/>
-        )}
+        {page==="customers" && <CustomersPage navigate={navigate}/>}
+        {page==="accounts"  && <AccountsPage currentRole={currentRole}/>}
+        {page==="grafana"   && <GrafanaPage/>}
+        {page==="credentials" && <CredentialsPage currentRole={currentRole} currentUser={currentUser} ociSession={ociSess} onOciChange={refreshOci}/>}
+        {page==="schedules" && <SchedulesPage currentRole={currentRole}/>}
+        {page==="logs-page" && <ActivityLogsPage/>}
+        {page==="settings"  && <SettingsPage darkMode={darkMode} toggleDark={toggleDark} currentUser={currentUser} currentRole={currentRole} displayName={displayName}/>}
       </main>
       {/* Global reminder notifications — shown on all pages */}
       {authed && <ReminderNotif />}
@@ -149,29 +162,6 @@ export default function App() {
   );
 }
 
-function ComingSoon({ page, navigate }) {
-  const labels = {
-    customers:"Customers",accounts:"Accounts",grafana:"Grafana Dashboards",
-    credentials:"Credentials",schedules:"Schedules","logs-page":"Activity Logs",settings:"Settings"
-  };
-  return (
-    <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",
-      justifyContent:"center",gap:16,color:"var(--muted2)"}}>
-      <div style={{fontSize:40,opacity:.15}}>🚧</div>
-      <div style={{fontSize:15,fontWeight:600,color:"var(--muted)"}}>{labels[page]||page}</div>
-      <div style={{fontSize:12,color:"#363636"}}>Coming soon</div>
-      <button onClick={()=>navigate("dashboard")}
-        style={{background:"#B11226",color:"#fff",border:"none",fontFamily:"inherit",
-          fontSize:12,fontWeight:500,padding:"8px 20px",borderRadius:6,cursor:"pointer"}}>
-        ← Dashboard
-      </button>
-    </div>
-  );
-}
-
-/* ══════════════════════════════════════════════════════════
-   SIDEBAR — sesuai desain gambar
-══════════════════════════════════════════════════════════ */
 function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, running, currentUser, displayName, currentRole, darkMode, toggleDark }) {
   const [showOci,   setShowOci]   = useState(false);
   const [expanded,  setExpanded]  = useState(null);
@@ -191,7 +181,8 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
     sessionStorage.removeItem("pr_user");
     sessionStorage.removeItem("pr_display");
     sessionStorage.removeItem("pr_role");
-    window.location.reload();
+    sessionStorage.removeItem("pr_token");
+    clearSession();
   };
 
   return (
@@ -202,7 +193,7 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
           <HubIcon size={18}/>
         </div>
         <div>
-          <div style={SB.logoName}>MS Command<br/>Center</div>
+          <div style={SB.logoName}>Portal<br/>Report</div>
         </div>
       </div>
 
@@ -210,9 +201,9 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
       <nav style={SB.nav}>
         <NavItem icon={DashIcon}   label="Dashboard"       id="dashboard"       active={page==="dashboard"}       onClick={()=>navigate("dashboard")}/>
         <NavItem icon={AlertIcon}  label="Grafana Alerts"  id="alert-monitor"   active={page==="alert-monitor"}   onClick={()=>navigate("alert-monitor")}/>
-        <NavItem icon={TaskIcon}   label="Daily Report"    id="daily-task"      active={page==="daily-task"}      onClick={()=>navigate("daily-task")}/>
+        <NavItem icon={TaskIcon}   label="Tickets"         id="daily-task"      active={page==="daily-task"}      onClick={()=>navigate("daily-task")}/>
         <NavItem icon={ReportIcon} label="Weekly Reports"   id="generate-report" active={page==="generate-report"} onClick={()=>navigate("generate-report")}/>
-        <NavItem icon={LogIcon}    label="Reports History"  id="files"           active={page==="files"}           onClick={()=>navigate("files","pelindo")}/>
+        <NavItem icon={LogIcon}    label="Reports History"  id="files"           active={page==="files"}           onClick={()=>navigate("files", custId || customers[0]?.id || "pelindo")}/>
 
         <div style={SB.sectionLabel}>MORE</div>
         <NavItem icon={ScheduleIcon} label="Schedules"      id="schedules"       active={page==="schedules"}       onClick={()=>navigate("schedules")}/>
@@ -329,48 +320,3 @@ function SettingsIcon({size=14}) { return <svg width={size} height={size} viewBo
 function AlertIcon({size=14})    { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2L2 13h12L8 2z"/><line x1="8" y1="7" x2="8" y2="10"/><circle cx="8" cy="12" r=".6" fill="currentColor" stroke="none"/></svg>; }
 function ActivityIcon({size=14}) { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="1,8 4,5 6,9 9,3 12,7 15,4"/><line x1="1" y1="13" x2="15" y2="13"/></svg>; }
 
-/* ── OCI Modal ── */
-function OciModal({ loggedIn, savedAt, onClose, onDone }) {
-  const [json, setJson] = useState("");
-  const [st,   setSt]   = useState("idle");
-  const [msg,  setMsg]  = useState("");
-  const save = async () => {
-    if (!json.trim()) return; setSt("loading"); setMsg("Saving…");
-    try {
-      const d = await fetch("/api/oci/save_cookies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cookies:json})}).then(r=>r.json());
-      if (d.status==="ok") { setSt("done"); setMsg(`✅ ${d.count} cookies saved`); setTimeout(onDone,1500); }
-      else { setSt("error"); setMsg("Error: "+(d.error||"unknown")); }
-    } catch(e) { setSt("error"); setMsg(e.message); }
-  };
-  const logout = async () => { await fetch("/api/oci/logout",{method:"POST"}); onDone(); };
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{width:480}} onClick={e=>e.stopPropagation()}>
-        <div className="modal-header"><span>🔶 OCI Session</span><button className="modal-close" onClick={onClose}>✕</button></div>
-        {loggedIn ? (
-          <div className="modal-body">
-            <div className="oci-status-ok">✓ Session Active</div>
-            {savedAt&&<div className="oci-saved">Saved: {new Date(savedAt).toLocaleString()}</div>}
-            <button className="btn-danger" onClick={logout}>Disconnect</button>
-          </div>
-        ) : (
-          <div className="modal-body">
-            <p className="modal-note" style={{fontWeight:600}}>How to connect OCI:</p>
-            <ol style={{fontSize:11,color:"var(--muted)",paddingLeft:16,lineHeight:2.2}}>
-              <li>Install <strong style={{color:"var(--text2)"}}>EditThisCookie</strong> in Chrome</li>
-              <li>Login at <a href="https://cloud.oracle.com" target="_blank" rel="noreferrer" style={{color:"#B11226"}}>cloud.oracle.com</a></li>
-              <li>Export cookies → Paste below</li>
-            </ol>
-            <label className="form-label">Cookies JSON</label>
-            <textarea className="form-input" style={{height:80,resize:"vertical",fontFamily:"monospace",fontSize:10}}
-              value={json} onChange={e=>setJson(e.target.value)} placeholder='[{"name":"..."}]' disabled={st==="loading"}/>
-            {msg&&<div className={"form-msg "+st}>{msg}</div>}
-            <button className="btn-primary" onClick={save} disabled={st==="loading"||!json.trim()}>
-              {st==="loading"?"Saving…":"💾 Save & Connect"}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

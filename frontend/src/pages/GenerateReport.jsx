@@ -19,25 +19,6 @@ function todayWIB() {
   }).format(new Date());
 }
 
-const FILE_FILTER = {
-  grafana_capture:       n => n.includes("grafana") && !n.includes("agustus") && !n.includes("week"),
-  grafana_weekly_report: n => n.includes("grafana") && (n.includes("week") || n.endsWith(".zip")),
-  oci_ilcs_backup:       n => n.includes("ilcs") && !n.includes("status"),
-  oci_pelindo_backup:    n => n.includes("oci_pelindo"),
-  daily_ilcs_status:     n => n.includes("status") || n.includes("daily"),
-};
-
-function fmtSize(kb) {
-  return kb >= 1024 ? (kb/1024).toFixed(1)+" MB" : kb+" KB";
-}
-
-function fileIcon(name) {
-  if (name.endsWith(".pptx")) return "📊";
-  if (name.endsWith(".docx")) return "📝";
-  if (name.endsWith(".zip"))  return "🗜";
-  return "📄";
-}
-
 export default function GenerateReport({ customers, navigate }) {
   const [selCust,   setSelCust]   = useState("");
   const [selAuto,   setSelAuto]   = useState("");
@@ -48,8 +29,8 @@ export default function GenerateReport({ customers, navigate }) {
   const [dailyTaskId, setDailyTaskId] = useState(null);
   const [otpSubmitted, setOtpSubmitted] = useState(false);
   const [step,      setStep]      = useState("idle");
+  const [resultMsg, setResultMsg] = useState("");
   const [logLines,  setLogLines]  = useState([]);
-  const [allFiles,  setAllFiles]  = useState([]);
   const [custDetail,setCustDetail]= useState(null); // full customer with automations
   const logRef = useRef(null);
 
@@ -58,7 +39,7 @@ export default function GenerateReport({ customers, navigate }) {
   const autos     = customer?.automations || [];
   const auto      = autos.find(a=>a.id===selAuto);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayWIB();
 
   const loadLog = async (cid, aid) => {
     const c = cid || selCust;
@@ -90,17 +71,6 @@ export default function GenerateReport({ customers, navigate }) {
     } catch(_){}
   };
 
-  const loadFiles = async (cid) => {
-    const c = cid || selCust;
-    if (!c) return;
-    try {
-      const d = await fetch("/api/files/"+c).then(r=>r.json());
-      const all = [...(d.reports||[]),...(d.screenshots||[])]
-        .sort((a,b)=>new Date(b.created)-new Date(a.created));
-      setAllFiles(all);
-    } catch(_){}
-  };
-
   // Load log when automation changes
   useEffect(() => {
     if (!selCust || !selAuto) {
@@ -115,10 +85,9 @@ export default function GenerateReport({ customers, navigate }) {
     loadLog(selCust, selAuto);
   }, [selCust, selAuto]);
 
-  // Load files + customer detail when customer changes
+  // Load customer detail when customer changes
   useEffect(() => {
-    if (!selCust) { setAllFiles([]); setCustDetail(null); return; }
-    loadFiles(selCust);
+    if (!selCust) { setCustDetail(null); return; }
     fetch("/api/customers/"+selCust)
       .then(r=>r.json()).then(setCustDetail).catch(()=>{});
   }, [selCust]);
@@ -167,21 +136,10 @@ export default function GenerateReport({ customers, navigate }) {
             } catch (_) {}
           }
           setStep("done"); clearInterval(iv);
-          // Refresh output files beberapa kali untuk menghindari race
-          // antara Celery selesai menulis file dan API file listing.
-          await loadFiles(selCust);
-          if (selAuto === "grafana_weekly_report") {
-            setTimeout(() => loadFiles(selCust), 500);
-            setTimeout(() => loadFiles(selCust), 1500);
-            setTimeout(() => loadFiles(selCust), 3000);
-          } else {
-            setTimeout(() => loadFiles(selCust), 1000);
-            setTimeout(() => loadFiles(selCust), 3000);
-          }
           logActivity(
             "Generate Report",
             "report",
-            `${auto?.name || selAuto} | Customer: ${selCust} | ${new Date().toISOString().slice(0,10)}`
+            `${auto?.name || selAuto} | Customer: ${selCust} | ${todayWIB()}`
           );
         } else if (st.status==="FAILURE") {
           if (dailyTaskId) {
@@ -212,6 +170,7 @@ export default function GenerateReport({ customers, navigate }) {
     if (step === "running") return;
     if (!selCust||!selAuto) return;
     setOtpSubmitted(false);
+    setResultMsg("");
     setStep("running"); setLogLines([]);
     setDailyTaskId(null);
     try {
@@ -242,6 +201,7 @@ export default function GenerateReport({ customers, navigate }) {
       }
 
       setDailyTaskId(taskData.id);
+      const createdTaskId = taskData.id;
 
       const d = await fetch("/api/run",{method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -254,8 +214,20 @@ export default function GenerateReport({ customers, navigate }) {
           const lg = await fetch(`/api/logs/${selCust}/${selAuto}`).then(r=>r.json());
           if (lg.logs) setLogLines(lg.logs);
         } catch (_) {}
-      } else { setStep("error"); }
-    } catch(e) { setStep("error"); }
+      } else {
+        // Don't leave an orphaned "In Progress" daily task behind.
+        await fetch("/api/tasks/" + createdTaskId, {
+          method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ status: "Cancelled", end: timeNowWIB() }),
+        }).catch(() => {});
+        setResultMsg(d.error || "Automation gagal dijalankan.");
+        setStep("error");
+      }
+    } catch(e) {
+      setResultMsg(e.message || "Automation gagal dijalankan.");
+      setStep("error");
+    }
   };
 
   const handleOtpSubmit  = async () => {
@@ -263,10 +235,6 @@ export default function GenerateReport({ customers, navigate }) {
       body:JSON.stringify({task_id:taskId,otp})});
     setOtpModal(false); setOtp(""); setOtpSubmitted(true);
   };
-
-  // Files filtered for selected automation
-  // Show ALL files - no filter to prevent files from disappearing
-  const autoFiles = allFiles;
 
   const logColor = (l) => {
     if (/error|fail|FAIL/i.test(l))             return "#F87171";
@@ -287,12 +255,12 @@ export default function GenerateReport({ customers, navigate }) {
         </div>
         <div style={{display:"flex",gap:8}}>
           {selCust&&selAuto&&(
-            <button style={G.refreshBtn} onClick={()=>{ loadFiles(selCust); loadLog(selCust,selAuto); }}>↻ Refresh</button>
+            <button style={G.refreshBtn} onClick={()=>loadLog(selCust,selAuto)}>↻ Refresh</button>
           )}
         </div>
       </div>
 
-      {/* ── MAIN 3-COLUMN LAYOUT ── */}
+      {/* ── MAIN 2-COLUMN LAYOUT ── */}
       <div style={G.layout}>
 
         {/* ── COL 1: Form ── */}
@@ -357,7 +325,7 @@ export default function GenerateReport({ customers, navigate }) {
               display:"flex",alignItems:"center",gap:8}}>
               {step==="running"&&<span className="spinner" style={{width:10,height:10,borderWidth:1.5,borderColor:"currentColor",borderTopColor:"transparent"}}/>}
               {step==="done"?"✅ Report generated successfully!":
-               step==="error"?"❌ Generation failed — check log":
+               step==="error"?(resultMsg ? `❌ ${resultMsg}` : "❌ Generation failed — check log"):
                "⏳ Generating report..."}
             </div>
           )}
@@ -379,83 +347,7 @@ export default function GenerateReport({ customers, navigate }) {
           )}
         </div>
 
-        {/* ── COL 2: Output Files (Kotak 1) ── */}
-        <div style={G.filesCol}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexShrink:0}}>
-            <div style={{...G.sectionLabel, margin:0}}>OUTPUT FILES</div>
-            {selCust&&(
-              <button style={G.smallBtn} onClick={loadFiles}>↻</button>
-            )}
-          </div>
-
-          <div style={{flex:1,overflowY:"auto"}}>
-            {!selCust ? (
-              <div style={G.emptyState}>
-                <div style={{fontSize:32,opacity:.12,marginBottom:8}}>📁</div>
-                <div>Select a customer to view output files</div>
-              </div>
-            ) : autoFiles.length===0 ? (
-              <div style={G.emptyState}>
-                <div style={{fontSize:32,opacity:.12,marginBottom:8}}>📂</div>
-                <div>No output files yet</div>
-                <div style={{fontSize:10,color:"#363636",marginTop:4}}>
-                  Run an automation to generate files
-                </div>
-              </div>
-            ) : (
-              autoFiles.map((f,i)=>{
-                const ext = f.name.split(".").pop();
-                const extColor = {pptx:"#F59E0B",docx:"#3B82F6",txt:"#22C55E",zip:"#8B5CF6"}[ext]||"var(--muted)";
-                return (
-                  <div key={i} style={{
-                    display:"flex",alignItems:"center",gap:10,
-                    padding:"10px 12px",marginBottom:6,
-                    background:"var(--bg4)",border:"1px solid var(--border)",borderRadius:8,
-                    transition:"border-color .15s",cursor:"default",
-                  }}
-                  onMouseEnter={e=>e.currentTarget.style.borderColor="var(--border2)"}
-                  onMouseLeave={e=>e.currentTarget.style.borderColor="var(--border)"}>
-                    <div style={{width:36,height:36,borderRadius:7,
-                      background:"var(--surface2)",border:"1px solid #242424",
-                      display:"flex",alignItems:"center",justifyContent:"center",
-                      fontSize:18,flexShrink:0}}>
-                      {fileIcon(f.name)}
-                    </div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:11,fontWeight:500,color:"var(--text3)",
-                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
-                        fontFamily:"'JetBrains Mono',monospace"}}
-                        title={f.name}>{f.name}</div>
-                      <div style={{display:"flex",gap:8,alignItems:"center",marginTop:3}}>
-                        <span style={{fontSize:9,fontWeight:700,color:extColor,
-                          textTransform:"uppercase"}}>{ext}</span>
-                        <span style={{fontSize:9,color:"#363636"}}>·</span>
-                        <span style={{fontSize:9,color:"#363636"}}>{fmtSize(f.size_kb)}</span>
-                        <span style={{fontSize:9,color:"#363636"}}>·</span>
-                        <span style={{fontSize:9,color:"#363636"}}>
-                          {new Date(f.created).toLocaleDateString("en-GB",
-                            {day:"2-digit",month:"short",year:"numeric"})}
-                        </span>
-                      </div>
-                    </div>
-                    <a href={f.download||("/api/download/reports/"+f.name)} download={f.name}
-                      style={{flexShrink:0,background:"#B11226",color:"#fff",
-                        border:"none",fontSize:10,fontWeight:600,
-                        padding:"5px 12px",borderRadius:5,textDecoration:"none",
-                        display:"flex",alignItems:"center",gap:5,
-                        transition:"background .15s",whiteSpace:"nowrap"}}
-                      onMouseEnter={e=>e.currentTarget.style.background="#8F0D1E"}
-                      onMouseLeave={e=>e.currentTarget.style.background="#B11226"}>
-                      ↓ Download
-                    </a>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* ── COL 3: Live Log (Kotak 2) ── */}
+        {/* ── COL 2: Live Log ── */}
         <div style={G.logCol}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
             marginBottom:12,flexShrink:0}}>
@@ -549,7 +441,7 @@ const G = {
               background:"var(--bg2)"},
   title:     {fontSize:18,fontWeight:700,letterSpacing:"-.02em",color:"var(--text)"},
   sub:       {fontSize:11,color:"var(--muted2)",marginTop:2},
-  layout:    {flex:1,display:"grid",gridTemplateColumns:"260px 1fr 1fr",gap:0,
+  layout:    {flex:1,display:"grid",gridTemplateColumns:"300px 1fr",gap:0,
               overflow:"hidden",borderTop:"1px solid var(--border)"},
   sectionLabel:{fontSize:9,fontWeight:700,letterSpacing:".12em",color:"var(--muted3)",
                textTransform:"uppercase"},
@@ -577,10 +469,6 @@ const G = {
               fontFamily:"inherit",fontSize:11,padding:"8px",borderRadius:7,
               cursor:"pointer",textAlign:"center"},
 
-  /* Files column */
-  filesCol:  {padding:"18px 18px",borderRight:"1px solid var(--border)",
-              display:"flex",flexDirection:"column",overflow:"hidden"},
-
   /* Log column */
   logCol:    {padding:"18px 18px",display:"flex",flexDirection:"column",overflow:"hidden"},
   logBox:    {flex:1,minHeight:0,fontFamily:"'JetBrains Mono','Fira Code',monospace",
@@ -588,9 +476,6 @@ const G = {
               border:"1px solid var(--border)",borderRadius:8,
               padding:"10px 12px",lineHeight:1.7},
 
-  emptyState:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",
-              justifyContent:"center",color:"var(--muted3)",fontSize:11,
-              fontStyle:"italic",textAlign:"center"},
   refreshBtn:{background:"none",border:"1px solid var(--border2)",color:"var(--muted)",
               fontFamily:"inherit",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer"},
   smallBtn:  {background:"none",border:"1px solid var(--border)",color:"var(--muted2)",

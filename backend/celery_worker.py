@@ -1,6 +1,7 @@
 import os, importlib, traceback
 from datetime import datetime
 from celery import Celery
+from celery.schedules import crontab
 
 # ── Load secrets dari AWS SSM Parameter Store (fallback ke env var) ──
 from ssm_config import get_secret, load_all_into_env
@@ -13,12 +14,45 @@ if not REDIS_URL:
         "or provide an authenticated REDIS_URL environment variable."
     )
 
+EMAIL_TO = [addr.strip() for addr in get_secret("EMAIL_TO").split(",") if addr.strip()]
+
 celery = Celery("automation_hub", broker=REDIS_URL, backend=REDIS_URL)
 celery.conf.update(
     task_serializer="json", result_serializer="json",
     accept_content=["json"], timezone="Asia/Jakarta", enable_utc=False,
     task_soft_time_limit=7200, task_time_limit=7500,
+    broker_connection_retry_on_startup=True,
 )
+
+# ── Scheduled tasks (celery beat) ────────────────────────────
+# Times are in Asia/Jakarta (enable_utc=False).
+BEAT_SCHEDULE = {
+    "daily-ilcs-status": {
+        "task": "celery_worker.scheduled_daily_ilcs",
+        "schedule": crontab(hour=7, minute=0),
+    },
+    "weekly-grafana-ho": {
+        "task": "celery_worker.scheduled_grafana_ho",
+        "schedule": crontab(hour=8, minute=0, day_of_week=1),
+    },
+}
+celery.conf.beat_schedule = BEAT_SCHEDULE
+
+# Display metadata for the Schedules page.
+SCHEDULE_META = {
+    "daily-ilcs-status": {
+        "label": "Daily Backup Status",
+        "description": "Cek status backup ILCS & Pelindo lalu kirim email harian",
+        "cron": "Setiap hari 07:00 WIB",
+        "log": "pelindo_daily_ilcs_status.log",
+    },
+    "weekly-grafana-ho": {
+        "label": "Weekly Grafana HO",
+        "description": "Capture dashboard Grafana 7 hari terakhir lalu kirim PPTX via email",
+        "cron": "Setiap Senin 08:00 WIB",
+        "log": "pelindo_grafana_capture.log",
+    },
+}
 
 
 def _log(path, msg):
@@ -300,7 +334,6 @@ def run_automation_with_login(self, customer_id, automation_id, args=None):
         module = importlib.import_module(f"tasks.{customer_id}.{automation_id}")
         result = module.run(log_path=log_path, args=args, driver=driver)
 
-        driver = None  # module sudah quit driver
         r.setex(STATE_KEY, 60, json.dumps({"state": "success"}))
         _log(log_path, f"=== DONE: {result} ===")
         return {"status": "success", "result": result}
@@ -496,6 +529,10 @@ def scheduled_daily_ilcs(self):
     today = datetime.now().strftime("%Y-%m-%d")
     subject = f"[Daily Backup] Status ILCS & Pelindo — {today}"
 
+    if not EMAIL_TO:
+        _log(log_path, "EMAIL_TO belum dikonfigurasi — email dilewati")
+        return {"status": "success", "email": "skipped"}
+
     from email_helper import send_report_email
     ok = send_report_email(
         to=EMAIL_TO,
@@ -555,6 +592,10 @@ def scheduled_grafana_ho(self):
         f"Laporan PPTX terlampir.\n\n"
         f"-- Portal Report · ICS Compute --"
     )
+
+    if not EMAIL_TO:
+        _log(log_path, "EMAIL_TO belum dikonfigurasi — email dilewati")
+        return {"status": "success", "email": "skipped"}
 
     from email_helper import send_report_email
     ok = send_report_email(

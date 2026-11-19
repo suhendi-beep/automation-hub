@@ -16,8 +16,11 @@ from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse, urljoin
 
 from PIL import Image
 
-GRAFANA_USER = os.getenv("GRAFANA_USER", "icscompute")
-GRAFANA_PASS = os.getenv("GRAFANA_PASS", "icsW4tch!")
+GRAFANA_USER = os.getenv("GRAFANA_USER", "")
+GRAFANA_PASS = os.getenv("GRAFANA_PASS", "")
+
+if not GRAFANA_USER or not GRAFANA_PASS:
+    raise RuntimeError("GRAFANA_USER/GRAFANA_PASS belum dikonfigurasi (set via SSM atau env)")
 CONFIG_FILE  = "/app/tasks/pelindo/grafana_weekly_config.json"
 OUTPUT_BASE  = "/app/shared/grafana_weekly"
 

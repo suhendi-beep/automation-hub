@@ -120,8 +120,8 @@ URL_LIST = [
                                                                                   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyav2ts5za64g73ujvj6lybgfbqysmg3h6ofdxf3v6dytdq", _C_APPTOS)),
     ("Pelindo Hub Stagging\nstagging - Database",                      _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyabz22hpr2jd4y4s25wuq2gbd4senqdtks2bxxtdimrgua",
                                                                                   "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyajeqrtpzm5zymbljwia5r2y4v3ocesndcz66tihk2g6uq", _C_APPTOS)),
-    ("DBTOSQA\nDTOSQA - Database",                                    _url_db  ("ocid1.dbsystem.oc1.ap-singapore-1.anzwsljrp7dotcyarmal5rkk3ew3n4zvuxdmfjvonobz5nrc5ppcw3b2on7a",
-                                                                                  "ocid1.database.oc1.ap-singapore-1.anzwsljrp7dotcyad4tlxuiagninoqgmydko7m7fovkq4bruuochsh2mwv7q", _C_APPTOS)),
+    ("DBTOSQA\nDTOSQA - Database",                                    _url_db  ("ocid1.dbsystem.oc1.ap-batam-1.anrguljrp7dotcyadoxpojnleh7k3me6ysgb6dcdt5nrwirlxgxz4rklahvq",
+                                                                                  "ocid1.database.oc1.ap-batam-1.anrguljrp7dotcyarw2rdrvuwutynmljuv4ongv6tuz4l5l3daqgaa3fuasq", _C_APPTOS, "ap-batam-1")),
 ]
 
 

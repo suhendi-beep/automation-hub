@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { localISODate } from "../api.js";
 
 const LVL = { INFO:"#3b6ef5", SUCCESS:"#16a34a", WARN:"#d97706", ERROR:"#dc2626" };
 
@@ -74,11 +75,17 @@ export default function CustomerPage({
 
   const handleRun = async (auto, args, creds) => {
     args = args||{};
-    if (auto.requires_oci_login && !ociSession?.logged_in) {
+    if (auto.requires_oci_login && !auto.requires_oci_credentials && !ociSession?.logged_in) {
       alert("This automation requires OCI login. Use the sidebar OCI button first.");
       return;
     }
     if (auto.args?.length && !Object.keys(args).length) { setArgsModal(auto); return; }
+    // OCI Backup jobs support inline login: ask for credentials when there is
+    // no active cookie session yet.
+    if (auto.requires_oci_credentials && !creds && !ociSession?.logged_in) {
+      setCredModal({ auto, args });
+      return;
+    }
     setStatuses(p=>({...p,[auto.id]:"QUEUED"}));
     setActiveLog(auto.id);
     try {
@@ -146,7 +153,7 @@ export default function CustomerPage({
               const st     = statuses[auto.id];
               const isRun  = !!(running||{})[auto.id];
               const showLog= activeLog === auto.id;
-              const noAuth = auto.requires_oci_login && !ociSession?.logged_in;
+              const noAuth = auto.requires_oci_login && !auto.requires_oci_credentials && !ociSession?.logged_in;
               const ICON   = {pptx:"📊",docx:"📝",report:"📋"}[auto.output_type]||"📄";
               const aFiles = filesFor(auto.id);
               const ST_STYLE = {
@@ -315,7 +322,7 @@ const C = {
 
 /* ── ArgsModal ── */
 function ArgsModal({ auto, onClose, onRun }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localISODate();
   const [vals, setVals] = useState(() => {
     const init = {};
     (auto.args||[]).forEach(a => {

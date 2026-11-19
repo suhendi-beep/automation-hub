@@ -1,16 +1,110 @@
-from flask import Flask, jsonify, request
+import glob
+import json
+import logging
+import logging.handlers
+import os
+import re
+import secrets
+import tempfile
+import threading
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+import requests
+from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
-from celery_worker import celery, run_automation, run_oci_login
-import os, glob
-from datetime import datetime
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from celery_worker import SCHEDULE_META, celery, run_automation, run_oci_login
 import oci_session
+import oci_dbm
+
+# ── Paths ────────────────────────────────────────────────────
+SHARED_DIR = os.getenv("SHARED_DIR", "/app/shared")
+
+
+def _shared(*parts):
+    return os.path.join(SHARED_DIR, *parts)
+
+
+os.makedirs(_shared("logs"), exist_ok=True)
 
 app = Flask(__name__)
-CORS(app)
 
-GRAFANA_BASE_URL = os.getenv("GRAFANA_BASE_URL", "https://monitoring.ilcs.co.id").rstrip("/")
-GRAFANA_USER     = os.getenv("GRAFANA_USER", "icscompute")
-GRAFANA_PASS     = os.getenv("GRAFANA_PASS", "icsW4tch!")
+# ── Logging ──────────────────────────────────────────────────
+log = logging.getLogger("automation_hub")
+if not log.handlers:
+    log.setLevel(logging.INFO)
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _stream = logging.StreamHandler()
+    _stream.setFormatter(_formatter)
+    _file = logging.handlers.RotatingFileHandler(
+        _shared("logs", "app.log"), maxBytes=5 * 1024 * 1024, backupCount=3
+    )
+    _file.setFormatter(_formatter)
+    log.addHandler(_stream)
+    log.addHandler(_file)
+
+# ── CORS ─────────────────────────────────────────────────────
+# Same-origin in production (nginx proxies /api). Only enable CORS for
+# explicitly whitelisted origins, e.g. CORS_ORIGINS=http://localhost:5173
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    CORS(app, origins=_cors_origins)
+
+# ── Config ───────────────────────────────────────────────────
+GRAFANA_BASE_URL = (
+    os.getenv("GRAFANA_URL") or os.getenv("GRAFANA_BASE_URL")
+    or "https://monitoring.ilcs.co.id"
+).rstrip("/")
+GRAFANA_USER = os.getenv("GRAFANA_USER", "")
+GRAFANA_PASS = os.getenv("GRAFANA_PASS", "")
+
+# Throttle repeated Grafana failure logs (the frontend polls every 30s).
+_grafana_last_error = None
+_grafana_last_log_at = 0.0
+
+
+def _log_grafana_failure(msg):
+    global _grafana_last_error, _grafana_last_log_at
+    now = time.time()
+    if msg != _grafana_last_error or now - _grafana_last_log_at >= 300:
+        log.warning("Grafana: %s", msg)
+        _grafana_last_error = msg
+        _grafana_last_log_at = now
+
+
+
+def _load_or_create_secret():
+    key = (os.getenv("SECRET_KEY") or "").strip()
+    if key:
+        return key
+    path = _shared("logs", ".secret_key")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            key = f.read().strip()
+        if key:
+            return key
+    except OSError:
+        pass
+    key = secrets.token_urlsafe(48)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key)
+    log.warning("SECRET_KEY not set — generated %s (mode 0600)", path)
+    return key
+
+
+SECRET_KEY = _load_or_create_secret()
+_serializer = URLSafeTimedSerializer(SECRET_KEY, salt="automation-hub-auth")
+TOKEN_MAX_AGE = int(os.getenv("AUTH_TOKEN_MAX_AGE", str(12 * 3600)))
+
+LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "300"))
+_login_attempts = defaultdict(list)
+_login_lock = threading.Lock()
 
 REGISTRY = {
     "pelindo": {
@@ -61,9 +155,208 @@ REGISTRY = {
     },
 }
 
+
+# ══════════════════════════════════════════════════════════════
+# JSON storage helpers — atomic writes + process lock
+# ══════════════════════════════════════════════════════════════
+_FILE_LOCK = threading.RLock()
+
+
+def _read_json(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("Cannot read %s: %s", path, e)
+        return default
+
+
+def _write_json(path, data):
+    """Write JSON atomically: temp file in the same dir + os.replace()."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _now():
+    return datetime.now()
+
+
+# ══════════════════════════════════════════════════════════════
+# Authentication
+# ══════════════════════════════════════════════════════════════
+USERS_FILE = _shared("logs", "users.json")
+ACTIVITY_FILE = _shared("logs", "activity_log.json")
+
+
+def _hash_password(password):
+    return generate_password_hash(password)
+
+
+def _is_hashed(value):
+    return value.startswith(("pbkdf2:", "scrypt:", "argon2:"))
+
+
+def _verify_password(stored, password):
+    if _is_hashed(stored):
+        return check_password_hash(stored, password)
+    return secrets.compare_digest(stored, password)
+
+
+def _default_users():
+    username = os.getenv("AUTH_USERNAME", "admin")
+    return [{
+        "username": username,
+        "password": _hash_password(os.getenv("AUTH_PASSWORD", "admin")),
+        "display": username.upper(),
+        "role": "admin",
+    }]
+
+
+def _save_users(users):
+    _write_json(USERS_FILE, users)
+
+
+def _load_users():
+    """Load users, migrating legacy plaintext passwords to hashes."""
+    raw = _read_json(USERS_FILE, None)
+    if not raw:
+        users = _default_users()
+        _save_users(users)
+        return users
+
+    migrated = False
+    for user in raw:
+        pw = user.get("password", "")
+        if pw and not _is_hashed(pw):
+            user["password"] = _hash_password(pw)
+            migrated = True
+    if migrated:
+        _save_users(raw)
+        log.info("Migrated plaintext user passwords to hashes")
+    return raw
+
+
+def _find_user(username):
+    return next((u for u in _load_users() if u.get("username") == username), None)
+
+
+def _token_version(user):
+    import hashlib
+    return hashlib.sha256(user.get("password", "").encode("utf-8")).hexdigest()[:16]
+
+
+def _issue_token(user):
+    return _serializer.dumps({
+        "u": user["username"],
+        "v": _token_version(user),
+    })
+
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return (forwarded.split(",")[0].strip() or request.remote_addr or "unknown")
+
+
+def _rate_limited(ip):
+    now = time.time()
+    with _login_lock:
+        attempts = [t for t in _login_attempts[ip] if now - t < LOGIN_WINDOW_SECONDS]
+        _login_attempts[ip] = attempts
+        return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(ip):
+    with _login_lock:
+        _login_attempts[ip].append(time.time())
+
+
+def _clear_login_failures(ip):
+    with _login_lock:
+        _login_attempts.pop(ip, None)
+
+
+PUBLIC_ENDPOINTS = {"/api/ping", "/api/auth/login"}
+
+
+@app.before_request
+def require_auth():
+    if not request.path.startswith("/api/"):
+        return None
+    if request.method == "OPTIONS" or request.path in PUBLIC_ENDPOINTS:
+        return None
+
+    header = request.headers.get("Authorization", "")
+    token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    if not token:
+        token = request.headers.get("X-Auth-Token", "").strip()
+    if not token:
+        return jsonify({"error": "Authentication required"}), 401
+
+    try:
+        payload = _serializer.loads(token, max_age=TOKEN_MAX_AGE)
+    except SignatureExpired:
+        return jsonify({"error": "Session expired, please log in again"}), 401
+    except BadSignature:
+        return jsonify({"error": "Invalid session token"}), 401
+
+    user = _find_user(payload.get("u", ""))
+    if not user or payload.get("v") != _token_version(user):
+        return jsonify({"error": "Session no longer valid"}), 401
+
+    g.user = {
+        "username": user["username"],
+        "display": user.get("display", user["username"]),
+        "role": user.get("role", "engineer"),
+    }
+    return None
+
+
+def _admin_only():
+    if g.user.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+    return None
+
+
+# ══════════════════════════════════════════════════════════════
+# Core / customer endpoints
+# ══════════════════════════════════════════════════════════════
 @app.route("/api/ping")
 def ping():
     return jsonify({"status": "ok"})
+
+
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "time": _now().isoformat(),
+        "storage": os.path.isdir(SHARED_DIR),
+    })
+
+
+@app.route("/api/config")
+def app_config():
+    return jsonify({
+        "version": "2.1.0",
+        "grafana_base_url": GRAFANA_BASE_URL,
+        "grafana_configured": bool(GRAFANA_USER and GRAFANA_PASS),
+        "shared_dir": SHARED_DIR,
+    })
 
 
 @app.route("/api/customers")
@@ -83,10 +376,10 @@ def get_customer(cid):
 
 @app.route("/api/run", methods=["POST"])
 def trigger_run():
-    data   = request.json or {}
-    cid    = data.get("customer")
-    aid    = data.get("automation")
-    args   = data.get("args", {})
+    data = request.json or {}
+    cid = data.get("customer")
+    aid = data.get("automation")
+    args = data.get("args", {})
 
     if cid not in REGISTRY:
         return jsonify({"error": "Customer not found"}), 404
@@ -94,44 +387,41 @@ def trigger_run():
     if not auto:
         return jsonify({"error": "Automation not found"}), 404
     if auto.get("requires_oci_login") and not oci_session.cookies_exist():
+        if auto.get("requires_oci_credentials"):
+            return jsonify({"error": "Kredensial OCI diperlukan untuk menjalankan automation ini.",
+                            "need_credentials": True}), 400
         return jsonify({"error": "Belum login OCI. Gunakan tombol Login OCI terlebih dahulu.", "need_login": True}), 400
 
     task = run_automation.delay(cid, aid, args)
-    return jsonify({"task_id": task.id, "status": "queued", "queued_at": datetime.utcnow().isoformat()})
+    return jsonify({"task_id": task.id, "status": "queued", "queued_at": _now().isoformat()})
 
 
 @app.route("/api/run_with_credentials", methods=["POST"])
 def trigger_run_with_credentials():
     """Run automation dengan inline OCI login — untuk OCI Backup."""
     data = request.json or {}
-    cid    = data.get("customer")
-    aid    = data.get("automation")
-    args   = data.get("args", {})
-    
-    tenancy  = data.get("tenancy", "")
-    username = data.get("username", "")
-    password = data.get("password", "")
-    
+    cid = data.get("customer")
+    aid = data.get("automation")
+    args = data.get("args", {})
+
     if cid not in REGISTRY:
         return jsonify({"error": "Customer not found"}), 404
     auto = next((a for a in REGISTRY[cid]["automations"] if a["id"] == aid), None)
     if not auto:
         return jsonify({"error": "Automation not found"}), 404
-    
-    # Inject credentials ke args
-    args["_tenancy"]  = tenancy
-    args["_username"] = username
-    args["_password"] = password
-    
+
+    args["_tenancy"] = data.get("tenancy", "")
+    args["_username"] = data.get("username", "")
+    args["_password"] = data.get("password", "")
+
     from celery_worker import run_automation_with_login
     task = run_automation_with_login.delay(cid, aid, args)
-    return jsonify({"task_id": task.id, "status": "queued", "queued_at": datetime.utcnow().isoformat()})
+    return jsonify({"task_id": task.id, "status": "queued", "queued_at": _now().isoformat()})
 
 
 @app.route("/api/oci/login_state/<task_id>")
 def oci_login_state(task_id):
-    """Poll state OCI login untuk OTP flow."""
-    import redis, json
+    import redis
     r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     raw = r.get(f"oci_login_state:{task_id}")
     if not raw:
@@ -141,15 +431,14 @@ def oci_login_state(task_id):
 
 @app.route("/api/oci/otp", methods=["POST"])
 def submit_otp():
-    """Frontend submit OTP untuk task yang sedang berjalan."""
     import redis
     data = request.json or {}
     task_id = data.get("task_id")
-    otp     = data.get("otp", "")
-    
+    otp = data.get("otp", "")
+
     if not task_id or not otp:
         return jsonify({"error": "task_id dan otp required"}), 400
-    
+
     r = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     r.setex(f"oci_login_otp:{task_id}", 300, otp)
     return jsonify({"status": "ok"})
@@ -163,10 +452,12 @@ def task_status(task_id):
 
 @app.route("/api/logs/<cid>/<aid>")
 def get_logs(cid, aid):
-    path = f"/app/shared/logs/{cid}_{aid}.log"
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", cid) or not re.fullmatch(r"[A-Za-z0-9_-]+", aid):
+        return jsonify({"error": "Invalid name"}), 400
+    path = _shared("logs", f"{cid}_{aid}.log")
     if not os.path.exists(path):
         return jsonify({"logs": []})
-    with open(path) as f:
+    with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
     return jsonify({"logs": lines[-300:]})
 
@@ -174,9 +465,9 @@ def get_logs(cid, aid):
 @app.route("/api/history")
 def get_history():
     history = []
-    for p in sorted(glob.glob("/app/shared/logs/*.log"), reverse=True):
+    for p in sorted(glob.glob(_shared("logs", "*.log")), reverse=True):
         name = os.path.basename(p).replace(".log", "")
-        if name.startswith("_"):
+        if name.startswith("_") or name == "app":
             continue
         parts = name.split("_", 1)
         if len(parts) != 2:
@@ -192,16 +483,19 @@ def get_history():
 
 @app.route("/api/files/<cid>")
 def list_files(cid):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", cid):
+        return jsonify({"error": "Invalid customer id"}), 400
     results = {}
     for folder in ["reports", "screenshots"]:
         files = []
-        for f in glob.glob(f"/app/shared/{folder}/{cid}_*"):
+        for f in glob.glob(_shared(folder, f"{cid}_*")):
             stat = os.stat(f)
             files.append({
                 "name": os.path.basename(f),
                 "size_kb": round(stat.st_size / 1024, 1),
                 "created": datetime.fromtimestamp(stat.st_ctime).isoformat(),
                 "download": f"/api/download/{folder}/{os.path.basename(f)}",
+                "folder": folder,
             })
         results[folder] = sorted(files, key=lambda x: x["created"], reverse=True)
     return jsonify(results)
@@ -209,9 +503,8 @@ def list_files(cid):
 
 @app.route("/api/download/<folder>/<filename>")
 def download_file(folder, filename):
-    from flask import send_from_directory
     safe_folder = folder if folder in ["reports", "screenshots"] else "reports"
-    return send_from_directory(f"/app/shared/{safe_folder}", filename, as_attachment=True)
+    return send_from_directory(_shared(safe_folder), filename, as_attachment=True)
 
 
 # ── OCI Session ──────────────────────────────────────────────
@@ -240,7 +533,7 @@ def oci_logout():
 @app.route("/api/oci/save_cookies", methods=["POST"])
 def oci_save_cookies():
     """Manual OCI session connect — cookies pasted from the EditThisCookie
-    Chrome extension (see OciModal in App.jsx)."""
+    Chrome extension (see OciModal)."""
     data = request.json or {}
     raw = data.get("cookies", "")
     try:
@@ -255,16 +548,6 @@ def oci_save_cookies():
 
 
 # ── Grafana Alerts ───────────────────────────────────────────
-# Reads live firing alerts straight from Grafana's built-in Alertmanager
-# HTTP API (same credentials used by tasks/pelindo/grafana_capture.py to
-# log into the Grafana UI). No extra automation run required — this is a
-# direct, read-only REST call.
-import json
-import requests
-
-ALERT_ESKALASI_FILE = "/app/shared/logs/alert_eskalasi.json"
-
-
 def _grafana_severity_from_labels(labels):
     sev = (labels.get("severity") or labels.get("Severity") or "").strip()
     if sev:
@@ -278,14 +561,9 @@ def _grafana_severity_from_labels(labels):
 
 
 def fetch_grafana_alerts():
-    """Fetch currently firing/pending alerts from Grafana's Alertmanager API.
+    if not GRAFANA_USER or not GRAFANA_PASS:
+        raise RuntimeError("Grafana credentials are not configured")
 
-    Endpoint: GET {base}/api/alertmanager/grafana/api/v2/alerts
-    Auth: HTTP Basic (same GRAFANA_USER/GRAFANA_PASS as the capture automation).
-    Returns a list shaped the way the frontend (AlertPage.jsx, Dashboard.jsx)
-    already expects: name, folder, severity, resource, labels, active_at,
-    duration_min, state.
-    """
     url = f"{GRAFANA_BASE_URL}/api/alertmanager/grafana/api/v2/alerts"
     resp = requests.get(
         url,
@@ -296,19 +574,19 @@ def fetch_grafana_alerts():
     resp.raise_for_status()
     raw = resp.json()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     alerts = []
     for item in raw:
         labels = item.get("labels", {}) or {}
         annotations = item.get("annotations", {}) or {}
         status = item.get("status", {}) or {}
-        state = status.get("state", "active")  # active | suppressed
+        state = status.get("state", "active")
         starts_at = item.get("startsAt")
 
         duration_min = 0
         if starts_at:
             try:
-                started = datetime.fromisoformat(starts_at.replace("Z", "+00:00")).replace(tzinfo=None)
+                started = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
                 duration_min = max(0, int((now - started).total_seconds() // 60))
             except Exception:
                 duration_min = 0
@@ -334,29 +612,99 @@ def fetch_grafana_alerts():
 
 @app.route("/api/grafana/alerts")
 def grafana_alerts():
+    if not (GRAFANA_USER and GRAFANA_PASS):
+        return jsonify({
+            "alerts": [], "configured": False,
+            "error": "Grafana credentials are not configured (GRAFANA_USER / GRAFANA_PASS)",
+        })
     try:
         alerts = fetch_grafana_alerts()
-        return jsonify({"alerts": alerts, "fetched_at": datetime.utcnow().isoformat()})
+        return jsonify({"alerts": alerts, "configured": True, "fetched_at": _now().isoformat()})
     except requests.exceptions.RequestException as e:
-        return jsonify({"alerts": [], "error": f"Grafana unreachable: {e}"}), 502
+        msg = f"Grafana unreachable: {e}"
+        _log_grafana_failure(msg)
+        return jsonify({"alerts": [], "configured": True, "error": msg})
     except Exception as e:
-        return jsonify({"alerts": [], "error": str(e)}), 500
+        log.exception("Grafana alerts failed")
+        return jsonify({"alerts": [], "configured": True, "error": str(e)})
+
+
+@app.route("/api/oci/dbm/top-sql")
+def oci_dbm_top_sql():
+    ocid = (request.args.get("ocid") or "").strip()
+    refresh = request.args.get("refresh") == "1"
+    m = oci_dbm.OCID_RE.match(ocid)
+    region = m.group(1) if m else ""
+    console_url = (
+        f"https://cloud.oracle.com/dbmgmt-ui/perfhub?region={region}&ocid={ocid}"
+        if m else ""
+    )
+    try:
+        return jsonify(oci_dbm.get_top_sql(ocid, refresh=refresh))
+    except oci_dbm.OciError as e:
+        log.warning("DBM top-sql failed (%s): %s", e.code, e.message)
+        return jsonify({
+            "ok": False, "code": e.code, "error": e.message,
+            "ocid": ocid, "region": region, "console_url": console_url,
+        }), e.status
+    except Exception as e:
+        log.exception("DBM top-sql unexpected error")
+        return jsonify({
+            "ok": False, "code": "internal", "error": str(e),
+            "ocid": ocid, "region": region, "console_url": console_url,
+        }), 500
+
+
+@app.route("/api/grafana/dashboards")
+def grafana_dashboards():
+    if not (GRAFANA_USER and GRAFANA_PASS):
+        return jsonify({
+            "dashboards": [], "base_url": GRAFANA_BASE_URL, "configured": False,
+            "error": "Grafana credentials are not configured (GRAFANA_USER / GRAFANA_PASS)",
+        })
+    try:
+        resp = requests.get(
+            f"{GRAFANA_BASE_URL}/api/search",
+            auth=(GRAFANA_USER, GRAFANA_PASS),
+            params={"type": "dash-db", "limit": 200},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        dashboards = [{
+            "id": d.get("id"),
+            "uid": d.get("uid"),
+            "title": d.get("title") or "(untitled)",
+            "folder": d.get("folderTitle") or "General",
+            "tags": d.get("tags") or [],
+            "url": f"{GRAFANA_BASE_URL}/d/{d.get('uid') or d.get('id')}",
+        } for d in resp.json()]
+        return jsonify({"dashboards": dashboards, "base_url": GRAFANA_BASE_URL, "configured": True})
+    except requests.exceptions.RequestException as e:
+        msg = f"Grafana unreachable: {e}"
+        _log_grafana_failure(msg)
+        return jsonify({"dashboards": [], "base_url": GRAFANA_BASE_URL,
+                        "configured": True, "error": msg})
+    except Exception as e:
+        log.exception("Grafana dashboards failed")
+        return jsonify({"dashboards": [], "base_url": GRAFANA_BASE_URL,
+                        "configured": True, "error": str(e)})
+
+
+ALERT_ESKALASI_FILE = _shared("logs", "alert_eskalasi.json")
+ESKALASI_TTL_DAYS = int(os.getenv("ESKALASI_TTL_DAYS", "7"))
 
 
 def _load_eskalasi():
-    if not os.path.exists(ALERT_ESKALASI_FILE):
-        return {}
-    try:
-        with open(ALERT_ESKALASI_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
+    data = _read_json(ALERT_ESKALASI_FILE, {})
+    cutoff = (_now() - timedelta(days=ESKALASI_TTL_DAYS)).isoformat()
+    pruned = {k: v for k, v in data.items() if (v.get("at") or "") >= cutoff}
+    if len(pruned) != len(data):
+        _write_json(ALERT_ESKALASI_FILE, pruned)
+    return pruned
 
 
 def _save_eskalasi(data):
-    os.makedirs(os.path.dirname(ALERT_ESKALASI_FILE), exist_ok=True)
-    with open(ALERT_ESKALASI_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _write_json(ALERT_ESKALASI_FILE, data)
 
 
 @app.route("/api/alerts/eskalasi", methods=["GET"])
@@ -368,43 +716,38 @@ def get_eskalasi():
 def post_eskalasi():
     data = request.json or {}
     key = data.get("key")
-    by  = data.get("by", "")
+    by = data.get("by", "")
     if not key:
         return jsonify({"error": "key required"}), 400
-    store = _load_eskalasi()
-    store[key] = {"by": by, "at": datetime.utcnow().isoformat()}
-    _save_eskalasi(store)
+    with _FILE_LOCK:
+        store = _load_eskalasi()
+        store[key] = {"by": by, "at": _now().isoformat()}
+        _save_eskalasi(store)
     return jsonify({"status": "ok"})
 
 
-# ── Daily Tasks API ──────────────────────────────────────────
-TASKS_FILE          = "/app/shared/daily_tasks.json"
-DELETE_REQS_FILE    = "/app/shared/logs/delete_requests.json"
+# ══════════════════════════════════════════════════════════════
+# Daily tasks
+# ══════════════════════════════════════════════════════════════
+TASKS_FILE = _shared("daily_tasks.json")
+DELETE_REQS_FILE = _shared("logs", "delete_requests.json")
+
 
 def _load_tasks():
-    if not os.path.exists(TASKS_FILE):
-        return []
-    with open(TASKS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return _read_json(TASKS_FILE, [])
+
 
 def _save_tasks(tasks):
-    os.makedirs(os.path.dirname(TASKS_FILE), exist_ok=True)
-    with open(TASKS_FILE, "w", encoding="utf-8") as f:
-        json.dump(tasks, f, ensure_ascii=False, indent=2)
+    _write_json(TASKS_FILE, tasks)
+
 
 def _load_delete_reqs():
-    if not os.path.exists(DELETE_REQS_FILE):
-        return []
-    try:
-        with open(DELETE_REQS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
+    return _read_json(DELETE_REQS_FILE, [])
+
 
 def _save_delete_reqs(reqs):
-    os.makedirs(os.path.dirname(DELETE_REQS_FILE), exist_ok=True)
-    with open(DELETE_REQS_FILE, "w", encoding="utf-8") as f:
-        json.dump(reqs, f, ensure_ascii=False, indent=2)
+    _write_json(DELETE_REQS_FILE, reqs)
+
 
 def _next_task_no(tasks):
     """TSK-001, TSK-002, ... — based on the highest existing numeric suffix."""
@@ -418,6 +761,7 @@ def _next_task_no(tasks):
                 pass
     return f"TSK-{max_n + 1:03d}"
 
+
 @app.route("/api/tasks", methods=["GET"])
 def get_tasks():
     tasks = _load_tasks()
@@ -426,48 +770,55 @@ def get_tasks():
         tasks = [t for t in tasks if (t.get("date") or "").startswith(date_filter)]
     return jsonify(tasks)
 
+
 @app.route("/api/tasks", methods=["POST"])
 def create_task():
     data = request.json or {}
-    tasks = _load_tasks()
-    task_id = data.get("id") or str(int(datetime.utcnow().timestamp() * 1000))
-    new_task = {
-        "id": task_id,
-        "taskNo": _next_task_no(tasks),
-        "customer": data.get("customer", ""),
-        "description": data.get("description", ""),
-        "detail": data.get("detail", ""),
-        "date": data.get("date", ""),
-        "start": data.get("start", ""),
-        "end": data.get("end", ""),
-        "pic": data.get("pic", ""),
-        "status": data.get("status", "Open"),
-        "generateReport": data.get("generateReport", False),
-        "createdAt": data.get("createdAt", datetime.utcnow().isoformat()),
-    }
-    tasks.append(new_task)
-    _save_tasks(tasks)
+    with _FILE_LOCK:
+        tasks = _load_tasks()
+        new_task = {
+            "id": data.get("id") or str(int(_now().timestamp() * 1000)),
+            "taskNo": _next_task_no(tasks),
+            "customer": data.get("customer", ""),
+            "description": data.get("description", ""),
+            "detail": data.get("detail", ""),
+            "date": data.get("date", ""),
+            "start": data.get("start", ""),
+            "end": data.get("end", ""),
+            "pic": data.get("pic", ""),
+            "status": data.get("status", "Open"),
+            "generateReport": data.get("generateReport", False),
+            "createdAt": data.get("createdAt", _now().isoformat()),
+        }
+        tasks.append(new_task)
+        _save_tasks(tasks)
     return jsonify(new_task), 201
+
 
 @app.route("/api/tasks/<task_id>", methods=["PUT"])
 def update_task(task_id):
     data = request.json or {}
-    tasks = _load_tasks()
-    for task in tasks:
-        if task["id"] == task_id:
-            task.update(data)
-            _save_tasks(tasks)
-            return jsonify(task)
+    with _FILE_LOCK:
+        tasks = _load_tasks()
+        for task in tasks:
+            if task["id"] == task_id:
+                task.update(data)
+                _save_tasks(tasks)
+                return jsonify(task)
     return jsonify({"error": "Task not found"}), 404
+
 
 @app.route("/api/tasks/<task_id>", methods=["DELETE"])
 def delete_task(task_id):
-    tasks = _load_tasks()
-    tasks = [t for t in tasks if t["id"] != task_id]
-    _save_tasks(tasks)
-    # Clean up any pending delete-request tied to this task too.
-    reqs = [r for r in _load_delete_reqs() if r.get("task_id") != task_id]
-    _save_delete_reqs(reqs)
+    denied = _admin_only()
+    if denied:
+        return denied
+    with _FILE_LOCK:
+        tasks = _load_tasks()
+        tasks = [t for t in tasks if t["id"] != task_id]
+        _save_tasks(tasks)
+        reqs = [r for r in _load_delete_reqs() if r.get("task_id") != task_id]
+        _save_delete_reqs(reqs)
     return jsonify({"status": "ok"})
 
 
@@ -476,109 +827,175 @@ def delete_task(task_id):
 def get_pending_deletes():
     return jsonify(_load_delete_reqs())
 
+
 @app.route("/api/tasks/<task_id>/request-delete", methods=["POST"])
 def request_delete_task(task_id):
     data = request.json or {}
-    tasks = _load_tasks()
-    task = next((t for t in tasks if t["id"] == task_id), None)
-    if not task:
-        return jsonify({"error": "Task not found"}), 404
+    with _FILE_LOCK:
+        tasks = _load_tasks()
+        task = next((t for t in tasks if t["id"] == task_id), None)
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
 
-    reqs = _load_delete_reqs()
-    if any(r["task_id"] == task_id for r in reqs):
-        return jsonify({"status": "already_requested"})
+        reqs = _load_delete_reqs()
+        if any(r["task_id"] == task_id for r in reqs):
+            return jsonify({"status": "already_requested"})
 
-    reqs.append({
-        "task_id":      task_id,
-        "task_no":      task.get("taskNo", ""),
-        "task_desc":    task.get("description", ""),
-        "requested_by": data.get("display") or data.get("username") or "unknown",
-        "requested_at": datetime.utcnow().isoformat(),
-    })
-    _save_delete_reqs(reqs)
+        reqs.append({
+            "task_id":      task_id,
+            "task_no":      task.get("taskNo", ""),
+            "task_desc":    task.get("description", ""),
+            "requested_by": g.user.get("display") or data.get("display") or g.user["username"],
+            "requested_at": _now().isoformat(),
+        })
+        _save_delete_reqs(reqs)
     return jsonify({"status": "requested"})
+
 
 @app.route("/api/tasks/<task_id>/approve-delete", methods=["POST"])
 def approve_delete_task(task_id):
-    data   = request.json or {}
-    action = data.get("action", "approve")  # approve | reject
+    denied = _admin_only()
+    if denied:
+        return denied
+    data = request.json or {}
+    action = data.get("action", "approve")
 
-    reqs = _load_delete_reqs()
-    if not any(r["task_id"] == task_id for r in reqs):
-        return jsonify({"error": "No pending request for this task"}), 404
-    reqs = [r for r in reqs if r["task_id"] != task_id]
-    _save_delete_reqs(reqs)
+    with _FILE_LOCK:
+        reqs = _load_delete_reqs()
+        if not any(r["task_id"] == task_id for r in reqs):
+            return jsonify({"error": "No pending request for this task"}), 404
+        reqs = [r for r in reqs if r["task_id"] != task_id]
+        _save_delete_reqs(reqs)
 
-    if action == "approve":
-        tasks = _load_tasks()
-        tasks = [t for t in tasks if t["id"] != task_id]
-        _save_tasks(tasks)
+        if action == "approve":
+            tasks = _load_tasks()
+            tasks = [t for t in tasks if t["id"] != task_id]
+            _save_tasks(tasks)
 
     return jsonify({"status": "approved" if action == "approve" else "rejected"})
 
 
-# ── Users + Activity Log ──────────────────────────────────────
-# Lightweight file-backed user directory (no DB needed for a handful of
-# engineers). Passwords are stored as-is only for this local/internal tool —
-# matches the simplicity of the rest of the file-based storage here.
-USERS_FILE    = "/app/shared/logs/users.json"
-ACTIVITY_FILE = "/app/shared/logs/activity_log.json"
-
-DEFAULT_USERS = [
-    {
-        "username": os.getenv("AUTH_USERNAME", "admin"),
-        "password": os.getenv("AUTH_PASSWORD", "admin"),
-        "display":  os.getenv("AUTH_USERNAME", "admin").upper(),
-        "role":     "admin",
-    },
-]
-
-def _load_users():
-    if not os.path.exists(USERS_FILE):
-        _save_users(DEFAULT_USERS)
-        return list(DEFAULT_USERS)
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
-        return users if users else list(DEFAULT_USERS)
-    except (OSError, json.JSONDecodeError):
-        return list(DEFAULT_USERS)
-
-def _save_users(users):
-    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-def _load_activity():
-    if not os.path.exists(ACTIVITY_FILE):
-        return []
-    try:
-        with open(ACTIVITY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return []
-
-def _save_activity(entries):
-    os.makedirs(os.path.dirname(ACTIVITY_FILE), exist_ok=True)
-    with open(ACTIVITY_FILE, "w", encoding="utf-8") as f:
-        json.dump(entries, f, ensure_ascii=False, indent=2)
+# ══════════════════════════════════════════════════════════════
+# Users + Activity log
+# ══════════════════════════════════════════════════════════════
+def _public_user(user):
+    return {
+        "username": user["username"],
+        "display": user.get("display", user["username"]),
+        "role": user.get("role", "engineer"),
+    }
 
 
 @app.route("/api/auth/users", methods=["GET"])
 def list_users():
-    # Never return passwords to the frontend.
-    return jsonify([
-        {"username": u["username"], "display": u.get("display", u["username"]), "role": u.get("role", "engineer")}
-        for u in _load_users()
-    ])
+    return jsonify([_public_user(u) for u in _load_users()])
+
+
+@app.route("/api/auth/users", methods=["POST"])
+def create_user():
+    denied = _admin_only()
+    if denied:
+        return denied
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username):
+        return jsonify({"error": "Username must be 3-64 chars (letters, digits, . _ -)"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    role = "admin" if data.get("role") == "admin" else "engineer"
+
+    with _FILE_LOCK:
+        users = _load_users()
+        if any(u["username"] == username for u in users):
+            return jsonify({"error": "Username already exists"}), 409
+        user = {
+            "username": username,
+            "password": _hash_password(password),
+            "display": (data.get("display") or username).strip(),
+            "role": role,
+        }
+        users.append(user)
+        _save_users(users)
+    return jsonify(_public_user(user)), 201
+
+
+@app.route("/api/auth/users/<username>", methods=["PUT"])
+def update_user(username):
+    denied = _admin_only()
+    if denied:
+        return denied
+    data = request.json or {}
+
+    with _FILE_LOCK:
+        users = _load_users()
+        user = next((u for u in users if u["username"] == username), None)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        new_role = data.get("role", user.get("role", "engineer"))
+        admins = [u for u in users if u.get("role") == "admin"]
+        if user.get("role") == "admin" and new_role != "admin" and len(admins) <= 1:
+            return jsonify({"error": "Cannot demote the last admin"}), 400
+
+        if data.get("password"):
+            if len(data["password"]) < 8:
+                return jsonify({"error": "Password must be at least 8 characters"}), 400
+            user["password"] = _hash_password(data["password"])
+        if data.get("display"):
+            user["display"] = data["display"].strip()
+        if data.get("role") in ("admin", "engineer"):
+            user["role"] = data["role"]
+
+        _save_users(users)
+    return jsonify(_public_user(user))
+
+
+@app.route("/api/auth/users/<username>", methods=["DELETE"])
+def delete_user(username):
+    denied = _admin_only()
+    if denied:
+        return denied
+    if username == g.user["username"]:
+        return jsonify({"error": "You cannot delete your own account"}), 400
+
+    with _FILE_LOCK:
+        users = _load_users()
+        target = next((u for u in users if u["username"] == username), None)
+        if not target:
+            return jsonify({"error": "User not found"}), 404
+        admins = [u for u in users if u.get("role") == "admin"]
+        if target.get("role") == "admin" and len(admins) <= 1:
+            return jsonify({"error": "Cannot delete the last admin"}), 400
+        users = [u for u in users if u["username"] != username]
+        _save_users(users)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/auth/change-password", methods=["POST"])
+def change_password():
+    data = request.json or {}
+    current = data.get("current_password", "")
+    new = data.get("new_password", "")
+    if len(new) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+
+    with _FILE_LOCK:
+        users = _load_users()
+        user = next((u for u in users if u["username"] == g.user["username"]), None)
+        if not user or not _verify_password(user.get("password", ""), current):
+            return jsonify({"error": "Current password is incorrect"}), 400
+        user["password"] = _hash_password(new)
+        _save_users(users)
+    return jsonify({"status": "ok", "token": _issue_token(user)})
 
 
 @app.route("/api/activity", methods=["GET"])
 def get_activity():
-    entries = _load_activity()
+    entries = _read_json(ACTIVITY_FILE, [])
     user_filter = request.args.get("user")
     from_filter = request.args.get("from")
-    to_filter   = request.args.get("to")
+    to_filter = request.args.get("to")
     if user_filter:
         entries = [e for e in entries if e.get("username") == user_filter]
     if from_filter:
@@ -591,44 +1008,172 @@ def get_activity():
 @app.route("/api/activity", methods=["POST"])
 def post_activity():
     data = request.json or {}
-    username = data.get("username", "unknown")
-    now = datetime.utcnow()
+    username = g.user["username"]
+    display = g.user.get("display", username)
+    now = _now()
     entry = {
         "id":       f"{now.strftime('%Y%m%d%H%M%S%f')}",
-        "ts":       now.isoformat() + "Z",
+        "ts":       now.isoformat(),
         "date":     now.strftime("%Y-%m-%d"),
         "username": username,
-        "display":  data.get("display", username),
+        "display":  display,
         "action":   data.get("action", ""),
         "category": data.get("category", "general"),
         "detail":   data.get("detail", ""),
     }
-    entries = _load_activity()
-    entries.append(entry)
-    # Keep the log from growing forever.
-    entries = entries[-5000:]
-    _save_activity(entries)
+    with _FILE_LOCK:
+        entries = _read_json(ACTIVITY_FILE, [])
+        entries.append(entry)
+        entries = entries[-5000:]
+        _write_json(ACTIVITY_FILE, entries)
     return jsonify(entry), 201
 
 
-# ── Authentication ──
-@app.route('/api/auth/login', methods=['POST'])
-def auth_login():
-    data = request.json or {}
-    username = data.get('username', '')
-    password = data.get('password', '')
+# ══════════════════════════════════════════════════════════════
+# Cloud accounts (simple registry, admin-managed)
+# ══════════════════════════════════════════════════════════════
+ACCOUNTS_FILE = _shared("accounts.json")
 
-    user = next((u for u in _load_users() if u["username"] == username and u["password"] == password), None)
-    if user:
-        return jsonify({
-            'ok': True,
-            'user': user["username"],
-            'username': user["username"],
-            'display': user.get("display", user["username"].upper()),
-            'display_name': user.get("display", user["username"].upper()),
-            'role': user.get("role", "engineer"),
+
+@app.route("/api/accounts", methods=["GET"])
+def list_accounts():
+    return jsonify(_read_json(ACCOUNTS_FILE, []))
+
+
+@app.route("/api/accounts", methods=["POST"])
+def create_account():
+    denied = _admin_only()
+    if denied:
+        return denied
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Account name is required"}), 400
+    with _FILE_LOCK:
+        accounts = _read_json(ACCOUNTS_FILE, [])
+        account = {
+            "id": str(int(_now().timestamp() * 1000)),
+            "name": name,
+            "platform": data.get("platform", "OCI"),
+            "tenancy": data.get("tenancy", ""),
+            "region": data.get("region", ""),
+            "notes": data.get("notes", ""),
+            "createdAt": _now().isoformat(),
+        }
+        accounts.append(account)
+        _write_json(ACCOUNTS_FILE, accounts)
+    return jsonify(account), 201
+
+
+@app.route("/api/accounts/<account_id>", methods=["PUT"])
+def update_account(account_id):
+    denied = _admin_only()
+    if denied:
+        return denied
+    data = request.json or {}
+    with _FILE_LOCK:
+        accounts = _read_json(ACCOUNTS_FILE, [])
+        account = next((a for a in accounts if a["id"] == account_id), None)
+        if not account:
+            return jsonify({"error": "Account not found"}), 404
+        for field in ("name", "platform", "tenancy", "region", "notes"):
+            if field in data:
+                account[field] = data[field]
+        _write_json(ACCOUNTS_FILE, accounts)
+    return jsonify(account)
+
+
+@app.route("/api/accounts/<account_id>", methods=["DELETE"])
+def delete_account(account_id):
+    denied = _admin_only()
+    if denied:
+        return denied
+    with _FILE_LOCK:
+        accounts = _read_json(ACCOUNTS_FILE, [])
+        remaining = [a for a in accounts if a["id"] != account_id]
+        if len(remaining) == len(accounts):
+            return jsonify({"error": "Account not found"}), 404
+        _write_json(ACCOUNTS_FILE, remaining)
+    return jsonify({"status": "ok"})
+
+
+# ══════════════════════════════════════════════════════════════
+# Schedules (Celery beat)
+# ══════════════════════════════════════════════════════════════
+@app.route("/api/schedules")
+def list_schedules():
+    entries = []
+    for name, cfg in (celery.conf.beat_schedule or {}).items():
+        meta = SCHEDULE_META.get(name, {})
+        last_run = None
+        log_name = meta.get("log")
+        if log_name and os.path.exists(_shared("logs", log_name)):
+            last_run = datetime.fromtimestamp(
+                os.stat(_shared("logs", log_name)).st_mtime
+            ).isoformat()
+        entries.append({
+            "id": name,
+            "task": cfg.get("task"),
+            "label": meta.get("label", name),
+            "description": meta.get("description", ""),
+            "cron": meta.get("cron", ""),
+            "last_run": last_run,
         })
-    return jsonify({'ok': False, 'error': 'Invalid username or password'}), 401
+    return jsonify(entries)
+
+
+@app.route("/api/schedules/<schedule_id>/run", methods=["POST"])
+def run_schedule(schedule_id):
+    denied = _admin_only()
+    if denied:
+        return denied
+    cfg = (celery.conf.beat_schedule or {}).get(schedule_id)
+    if not cfg:
+        return jsonify({"error": "Schedule not found"}), 404
+    result = celery.send_task(cfg["task"])
+    return jsonify({"task_id": result.id, "status": "queued", "queued_at": _now().isoformat()})
+
+
+# ══════════════════════════════════════════════════════════════
+# Auth login (must stay public)
+# ══════════════════════════════════════════════════════════════
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    ip = _client_ip()
+    if _rate_limited(ip):
+        return jsonify({"ok": False, "error": "Too many attempts. Try again later."}), 429
+
+    data = request.json or {}
+    username = data.get("username", "")
+    password = data.get("password", "")
+
+    user = next(
+        (u for u in _load_users() if u["username"] == username and _verify_password(u.get("password", ""), password)),
+        None,
+    )
+    if not user:
+        _record_login_failure(ip)
+        return jsonify({"ok": False, "error": "Invalid username or password"}), 401
+
+    _clear_login_failures(ip)
+    return jsonify({
+        "ok": True,
+        "token": _issue_token(user),
+        "expires_in": TOKEN_MAX_AGE,
+        "user": user["username"],
+        "username": user["username"],
+        "display": user.get("display", user["username"].upper()),
+        "display_name": user.get("display", user["username"].upper()),
+        "role": user.get("role", "engineer"),
+    })
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    # Tokens are stateless; the client discards them. Kept as an endpoint so
+    # the frontend can log the action and future revocation can be added here.
+    return jsonify({"status": "ok"})
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=os.getenv("FLASK_DEBUG") == "1")

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { logActivity } from "../activityLog.js";
+import { localISODate } from "../api.js";
 
 /* ── Constants ── */
 const OLD_STORAGE_KEY = "portal_report_daily_tasks";
@@ -37,7 +38,7 @@ function exportCSV(tasks, label) {
   const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8;"});
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
-  a.href=url; a.download=`daily_task_${label}.csv`; a.click();
+  a.href=url; a.download=`tickets_${label}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -56,7 +57,7 @@ function DownloadModal({ tasks, onClose }) {
         <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg3)"}}>
           <span style={{fontSize:14}}>📥</span>
           <div style={{flex:1}}>
-            <div style={{fontSize:13,fontWeight:700,color:"var(--text2)"}}>Download Daily Task</div>
+            <div style={{fontSize:13,fontWeight:700,color:"var(--text2)"}}>Download Tickets</div>
             <div style={{fontSize:10,color:"var(--muted)"}}>Export ke CSV</div>
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:"var(--muted)",fontSize:16,cursor:"pointer"}}>✕</button>
@@ -74,7 +75,7 @@ function DownloadModal({ tasks, onClose }) {
             </div>
           )}
           <div style={{background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span style={{fontSize:11,color:"var(--muted)"}}>Total task</span>
+            <span style={{fontSize:11,color:"var(--muted)"}}>Total tickets</span>
             <span style={{fontSize:16,fontWeight:700,color:"var(--text2)"}}>{filtered.length}</span>
           </div>
           <div style={{display:"flex",gap:8,marginBottom:16}}>
@@ -86,7 +87,7 @@ function DownloadModal({ tasks, onClose }) {
             ))}
           </div>
           <button disabled={filtered.length===0} onClick={()=>{exportCSV(filtered,monthLabel);onClose();}} style={{width:"100%",background:filtered.length===0?"var(--surface2)":"#B11226",border:"none",borderRadius:6,color:filtered.length===0?"var(--muted)":"#fff",fontFamily:"inherit",fontSize:12,fontWeight:600,padding:"10px 0",cursor:filtered.length===0?"not-allowed":"pointer"}}>
-            {filtered.length===0?"Tidak ada data":`📥 Download CSV (${filtered.length} tasks)`}
+            {filtered.length===0?"Tidak ada data":`📥 Download CSV (${filtered.length} tickets)`}
           </button>
         </div>
       </div>
@@ -101,7 +102,7 @@ const makeEmptyForm = () => ({
 });
 
 export default function DailyTask({ customers }) {
-  const role    = sessionStorage.getItem("pr_role") || "admin";
+  const role    = sessionStorage.getItem("pr_role") || "engineer";
   const isAdmin = role === "admin" || (sessionStorage.getItem("pr_user") || "") === "admin";
   const currentUser    = sessionStorage.getItem("pr_user")    || "";
   const currentDisplay = sessionStorage.getItem("pr_display") || currentUser;
@@ -114,12 +115,13 @@ export default function DailyTask({ customers }) {
   const [filterDate,     setFilterDate]     = useState("");
   const [filterCust,     setFilterCust]     = useState("");
   const [filterSt,       setFilterSt]       = useState("");
+  const [search,         setSearch]         = useState("");
   const [viewTask,       setViewTask]       = useState(null);
   const [showDownload,   setShowDownload]   = useState(false);
   const [pendingDeletes, setPendingDeletes] = useState([]); // [{task_id, task_desc, requested_by, ...}]
   const [showPending,    setShowPending]    = useState(false);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localISODate();
 
   /* ── Load tasks dari API ── */
   const loadTasks = useCallback(async () => {
@@ -157,10 +159,10 @@ export default function DailyTask({ customers }) {
     if (!form.customer || !form.description) return;
     if (editId) {
       await apiUpdate(editId, form);
-      logActivity("Edit Task", "task", `${form.description} — ${form.customer}`);
+      logActivity("Edit Ticket", "task", `${form.description} — ${form.customer}`);
     } else {
       await apiCreate({ ...form, createdAt: new Date().toISOString() });
-      logActivity("Create Task", "task", `[${form.customer}] ${form.description}${form.detail ? " — "+form.detail.slice(0,80):""}`);
+      logActivity("Create Ticket", "task", `[${form.customer}] ${form.description}${form.detail ? " — "+form.detail.slice(0,80):""}`);
     }
     setShowModal(false);
     setEditId(null);
@@ -171,20 +173,20 @@ export default function DailyTask({ customers }) {
     const t = tasks.find(t => t.id === id);
     if (isAdmin) {
       // Admin langsung hapus
-      if (!window.confirm(`Delete task ${t?.taskNo || id}?`)) return;
+      if (!window.confirm(`Delete ticket ${t?.taskNo || id}?`)) return;
       await apiDelete(id);
       if (viewTask?.id === id) setViewTask(null);
       loadTasks();
       loadPendingDeletes();
     } else {
       // Engineer kirim request
-      if (!window.confirm(`Request deletion for task ${t?.taskNo || id}?\nAdmin will need to approve.`)) return;
+      if (!window.confirm(`Request deletion for ticket ${t?.taskNo || id}?\nAdmin will need to approve.`)) return;
       const res = await apiRequestDelete(id, { username: currentUser, display: currentDisplay });
       if (res.status === "already_requested") {
         alert("Delete request already sent. Waiting for admin approval.");
       } else {
         alert("Delete request sent. Admin will review your request.");
-        logActivity("Request Delete Task", "task", `${t?.description || id} (${t?.taskNo || ""})`);
+        logActivity("Request Delete Ticket", "task", `${t?.description || id} (${t?.taskNo || ""})`);
       }
     }
   };
@@ -198,13 +200,18 @@ export default function DailyTask({ customers }) {
   const handleStatusChange = async (id, status) => {
     const t = tasks.find(t => t.id === id);
     await apiUpdate(id, { status });
-    if (t) logActivity("Update Task Status", "task", `${t.description} → ${status}`);
+    if (t) logActivity("Update Ticket Status", "task", `${t.description} → ${status}`);
     // Optimistic update
     setTasks(p => p.map(x => x.id===id ? {...x,status} : x));
   };
 
   /* ── Filtered ── */
+  const query = search.trim().toLowerCase();
   const filtered = tasks.filter(t => {
+    if (query) {
+      const hay = `${t.taskNo||""} ${t.customer||""} ${t.description||""} ${t.detail||""} ${t.pic||""} ${t.status||""} ${t.date||""}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
     if (filterDate && t.date !== filterDate) return false;
     if (filterCust && t.customer !== filterCust) return false;
     if (filterSt   && t.status  !== filterSt)   return false;
@@ -224,10 +231,10 @@ export default function DailyTask({ customers }) {
       {/* ── HEADER ── */}
       <div style={T.header}>
         <div>
-          <h1 style={T.title}>Daily Task</h1>
+          <h1 style={T.title}>Tickets</h1>
           <p style={T.sub}>
             {new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
-            {todayTasks > 0 && ` · ${todayTasks} task${todayTasks>1?"s":""} today`}
+            {todayTasks > 0 && ` · ${todayTasks} ticket${todayTasks>1?"s":""} today`}
           </p>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -246,18 +253,18 @@ export default function DailyTask({ customers }) {
               </span>
             </button>
           )}
-          <button style={T.addBtn} onClick={openCreate}>+ Create Task</button>
+          <button style={T.addBtn} onClick={openCreate}>+ Create Ticket</button>
         </div>
       </div>
 
       {/* ── STAT CARDS ── */}
       <div style={T.statRow}>
         {[
-          {label:"Total Tasks",  val:total,     c:"var(--text2)",bg:"rgba(255,255,255,.04)"},
+          {label:"Total Tickets",  val:total,     c:"var(--text2)",bg:"rgba(255,255,255,.04)"},
           {label:"Close",        val:done,      c:"#4ADE80",    bg:"rgba(34,197,94,.06)"},
           {label:"In Progress",  val:inProg,    c:"#60A5FA",    bg:"rgba(59,130,246,.06)"},
           {label:"Pending",      val:pending,   c:"#FBBF24",    bg:"rgba(245,158,11,.06)"},
-          {label:"Today's Tasks",val:todayTasks,c:"#B11226",    bg:"rgba(177,18,38,.06)"},
+          {label:"Today's Tickets",val:todayTasks,c:"#B11226", bg:"rgba(177,18,38,.06)"},
         ].map((s,i)=>(
           <div key={i} style={{...T.statCard,background:s.bg}}>
             <div style={{fontSize:22,fontWeight:700,color:s.c,letterSpacing:"-.03em"}}>{s.val}</div>
@@ -269,6 +276,18 @@ export default function DailyTask({ customers }) {
       {/* ── FILTERS ── */}
       <div style={T.filterRow}>
         <div style={T.filterLabel}>FILTER:</div>
+        <div style={T.searchWrap}>
+          <span style={T.searchIcon}>🔍</span>
+          <input
+            type="text"
+            style={T.searchInput}
+            value={search}
+            onChange={e=>setSearch(e.target.value)}
+            placeholder="Search ticket no, customer, description…"
+            aria-label="Search tickets"
+          />
+          {search && <button style={T.searchClear} onClick={()=>setSearch("")} title="Clear search">✕</button>}
+        </div>
         <input type="date" style={T.filterInput} value={filterDate} onChange={e=>setFilterDate(e.target.value)}/>
         <select style={T.filterInput} value={filterCust} onChange={e=>setFilterCust(e.target.value)}>
           <option value="">All Customers</option>
@@ -278,29 +297,29 @@ export default function DailyTask({ customers }) {
           <option value="">All Status</option>
           {STATUS_OPTIONS.map(s=><option key={s}>{s}</option>)}
         </select>
-        {(filterDate||filterCust||filterSt) && (
-          <button style={T.clearFilterBtn} onClick={()=>{setFilterDate("");setFilterCust("");setFilterSt("");}}>× Clear</button>
+        {(search||filterDate||filterCust||filterSt) && (
+          <button style={T.clearFilterBtn} onClick={()=>{setSearch("");setFilterDate("");setFilterCust("");setFilterSt("");}}>× Clear</button>
         )}
-        <span style={{fontSize:10,color:"var(--muted3)",marginLeft:"auto"}}>{filtered.length} of {total} tasks</span>
+        <span style={{fontSize:10,color:"var(--muted3)",marginLeft:"auto"}}>{filtered.length} of {total} tickets</span>
       </div>
 
       {/* ── TABLE ── */}
       <div style={T.tableWrap}>
         {loading ? (
           <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:"40px",color:"var(--muted)",gap:10}}>
-            <span className="spinner" style={{width:16,height:16}}/>Loading tasks…
+            <span className="spinner" style={{width:16,height:16}}/>Loading tickets…
           </div>
         ) : (
           <table style={T.table}>
             <thead>
-              <tr>{["Task No","Customer","Task Description","Date","Start","End","PIC","Status","Actions"].map(h=>(
+              <tr>{["No Ticket","Customer","Ticket Description","Date","Start","End","PIC","Status","Actions"].map(h=>(
                 <th key={h} style={T.th}>{h}</th>
               ))}</tr>
             </thead>
             <tbody>
               {filtered.length===0 ? (
                 <tr><td colSpan={9} style={{textAlign:"center",padding:"32px",color:"var(--muted3)",fontSize:12,fontStyle:"italic"}}>
-                  {tasks.length===0 ? "No tasks yet — click \"Create Task\" to add one" : "No tasks match the current filter"}
+                  {tasks.length===0 ? "No tickets yet — click \"Create Ticket\" to add one" : "No tickets match the current filter"}
                 </td></tr>
               ) : filtered.map((t,i)=>(
                 <tr key={t.id}
@@ -357,7 +376,7 @@ export default function DailyTask({ customers }) {
         <div className="modal-overlay" onClick={()=>setShowModal(false)}>
           <div className="modal" style={{width:540,maxWidth:"95vw"}} onClick={e=>e.stopPropagation()}>
             <div className="modal-header">
-              <span>{editId ? "✏ Edit Task" : "+ Create New Task"}</span>
+              <span>{editId ? "✏ Edit Ticket" : "+ Create New Ticket"}</span>
               <button className="modal-close" onClick={()=>setShowModal(false)}>✕</button>
             </div>
             <div className="modal-body" style={{gap:10}}>
@@ -379,8 +398,8 @@ export default function DailyTask({ customers }) {
                 </div>
               </div>
               <div>
-                <label className="form-label">Task Description *</label>
-                <input className="form-input" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="Brief task description"/>
+                <label className="form-label">Ticket Description *</label>
+                <input className="form-input" value={form.description} onChange={e=>setForm(p=>({...p,description:e.target.value}))} placeholder="Brief ticket description"/>
               </div>
               <div>
                 <label className="form-label">Detail / Notes</label>
@@ -400,7 +419,7 @@ export default function DailyTask({ customers }) {
                 </div>
               </div>
               <button className="btn-primary" onClick={handleSubmit} disabled={!form.customer||!form.description}>
-                {editId ? "💾 Save Changes" : "✓ Create Task"}
+                {editId ? "💾 Save Changes" : "✓ Create Ticket"}
               </button>
             </div>
           </div>
@@ -429,7 +448,7 @@ export default function DailyTask({ customers }) {
                 </div>
               )}
               <div style={{display:"flex",gap:8,marginTop:4}}>
-                <button className="btn-primary" style={{flex:1}} onClick={()=>{setViewTask(null);openEdit(viewTask);}}>✏ Edit Task</button>
+                <button className="btn-primary" style={{flex:1}} onClick={()=>{setViewTask(null);openEdit(viewTask);}}>✏ Edit Ticket</button>
                 <button style={{flex:1,background:"rgba(239,68,68,.08)",color:"#F87171",border:"1px solid rgba(239,68,68,.2)",fontFamily:"inherit",fontSize:12,fontWeight:500,padding:"9px",borderRadius:6,cursor:"pointer"}} onClick={()=>handleDelete(viewTask.id)}>🗑 Delete</button>
               </div>
             </div>
@@ -501,8 +520,12 @@ const T = {
   addBtn:    {background:"#B11226",color:"#fff",border:"none",fontFamily:"inherit",fontSize:12,fontWeight:600,padding:"8px 18px",borderRadius:7,cursor:"pointer",transition:"background .15s"},
   statRow:   {display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,padding:"10px 24px",flexShrink:0},
   statCard:  {background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:9,padding:"12px 16px"},
-  filterRow: {display:"flex",alignItems:"center",gap:8,padding:"8px 24px",borderBottom:"1px solid var(--border)",flexShrink:0},
+  filterRow: {display:"flex",alignItems:"center",gap:8,padding:"8px 24px",borderBottom:"1px solid var(--border)",flexShrink:0,flexWrap:"wrap"},
   filterLabel:{fontSize:9,fontWeight:700,letterSpacing:".1em",color:"var(--muted3)",textTransform:"uppercase",flexShrink:0},
+  searchWrap:{position:"relative",display:"flex",alignItems:"center",flexShrink:0},
+  searchIcon:{position:"absolute",left:9,fontSize:10,opacity:.7,pointerEvents:"none"},
+  searchInput:{width:250,background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--text3)",fontFamily:"inherit",fontSize:11,padding:"5px 24px 5px 26px",borderRadius:5,outline:"none",boxSizing:"border-box"},
+  searchClear:{position:"absolute",right:4,background:"none",border:"none",color:"var(--muted2)",fontSize:10,cursor:"pointer",padding:"2px 5px"},
   filterInput:{background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--text4)",fontFamily:"inherit",fontSize:11,padding:"5px 10px",borderRadius:5,outline:"none",cursor:"pointer"},
   clearFilterBtn:{background:"none",border:"1px solid var(--border2)",color:"var(--muted)",fontFamily:"inherit",fontSize:10,padding:"4px 10px",borderRadius:4,cursor:"pointer"},
   tableWrap: {flex:1,overflowY:"auto",padding:"0 24px 16px"},

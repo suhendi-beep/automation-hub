@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { logActivity } from "../activityLog.js";
 import { isAlertMuted, setAlertMuted, onAlertMuteChange } from "../alertMute.js";
+import { localISODate } from "../api.js";
 
 /* ─── helpers ─────────────────────────────────────────── */
 function fmtDur(min) {
@@ -54,6 +55,27 @@ const FOLDER_COLORS = {
   "Huawei":               "#F97316",
 };
 function folderColor(f) { return FOLDER_COLORS[f] || "#6B7280"; }
+
+/* ─── OCI Database Management deep link ──────────────── */
+function dbOcid(a) {
+  const labels = a.labels || {};
+  const ocid = labels.resourceId || labels.unique_id;
+  return ocid && /^ocid1\.database\./i.test(ocid) ? ocid : null;
+}
+
+// Deep link resmi OCI (lihat docs APM drilldown): /dbmgmt-ui/perfhub?ocid=<DB OCID>.
+// /databaseHome hanya membuka detail managed database dan sering memunculkan
+// gate "Enable Diagnostics & Management", bukan halaman Performance Hub.
+function perfHubUrl(a) {
+  const ocid = dbOcid(a);
+  if (!ocid) return null;
+  const labels = a.labels || {};
+  const params = new URLSearchParams({
+    region: labels.region || "ap-singapore-1",
+    ocid,
+  });
+  return `https://cloud.oracle.com/dbmgmt-ui/perfhub?${params}`;
+}
 
 function getSeverity(name, sev) {
   // pakai severity dari label Prometheus kalau ada
@@ -305,6 +327,228 @@ function LaporkanModal({ alert, alreadyEskalasi, onClose, onEskalasi }) {
   );
 }
 
+/* ─── Top SQL Modal (OCI AWR) ────────────────────────── */
+function TopSqlModal({ alert, onClose }) {
+  const ocid = dbOcid(alert);
+  const consoleUrl = perfHubUrl(alert);
+  const [state, setState] = useState({ loading: true, error: "", code: "", data: null });
+  const [copied, setCopied] = useState("");
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    if (!ocid) {
+      setState({ loading: false, error: "Alert ini tidak memiliki OCID database.", code: "", data: null });
+      return;
+    }
+    const ctrl = new AbortController();
+    setState({ loading: true, error: "", code: "", data: null });
+    const qs = `ocid=${encodeURIComponent(ocid)}${nonce ? "&refresh=1" : ""}`;
+    fetch(`/api/oci/dbm/top-sql?${qs}`, { signal: ctrl.signal })
+      .then(r => r.json().then(d => ({ httpOk: r.ok, d })))
+      .then(({ httpOk, d }) => {
+        if (!httpOk || d.ok === false) {
+          setState({ loading: false, error: d.error || "Gagal mengambil data AWR.", code: d.code || "", data: null });
+        } else {
+          setState({ loading: false, error: "", code: "", data: d });
+        }
+      })
+      .catch(e => {
+        if (e.name !== "AbortError") {
+          setState({ loading: false, error: "Tidak dapat menghubungi backend.", code: "", data: null });
+        }
+      });
+    return () => ctrl.abort();
+  }, [ocid, nonce]);
+
+  const fallbackCopy = (text, done) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); done(); } catch {}
+    document.body.removeChild(ta);
+  };
+  const doCopy = (text, tag) => {
+    const done = () => { setCopied(tag); setTimeout(() => setCopied(""), 2000); };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  };
+
+  const copyBtn = (tag, text, label) => (
+    <button onClick={() => doCopy(text, tag)}
+      style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
+        borderRadius:5, color: copied === tag ? "#22C55E" : "var(--muted)",
+        fontFamily:"inherit", fontSize:10, fontWeight:600, padding:"3px 8px",
+        cursor:"pointer", whiteSpace:"nowrap" }}>
+      {copied === tag ? "✓ Copied" : label}
+    </button>
+  );
+
+  return (
+    <div onClick={onClose}
+      style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.75)",
+        display:"flex", alignItems:"center", justifyContent:"center",
+        zIndex:1000, padding:20 }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ width:"100%", maxWidth:860, maxHeight:"85vh", display:"flex",
+          flexDirection:"column", background:"var(--surface)",
+          border:"1px solid var(--border2)", borderRadius:10,
+          boxShadow:"0 20px 60px rgba(0,0,0,.6)", overflow:"hidden" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"14px 18px",
+          borderBottom:"1px solid var(--border)" }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:"var(--text2)" }}>
+              Top SQL — {state.data?.db_unique_name || alert.labels?.resourceName || alert.resource || "database"}
+            </div>
+            <div style={{ fontSize:10, color:"var(--muted)", marginTop:2 }}>
+              OCI Database Management · {state.data?.source === "awr" ? "AWR snapshot" : "ASH 1 jam terakhir"}
+            </div>
+          </div>
+          <button onClick={() => setNonce(n => n + 1)} disabled={state.loading}
+            style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
+              borderRadius:5, color:"var(--muted)", fontFamily:"inherit",
+              fontSize:10, fontWeight:600, padding:"4px 9px",
+              cursor:state.loading ? "default" : "pointer", opacity:state.loading ? .5 : 1 }}>
+            ↻ Refresh
+          </button>
+          <button onClick={onClose}
+            style={{ background:"none", border:"none", color:"var(--muted2)",
+              fontSize:16, cursor:"pointer", lineHeight:1, padding:0 }}>
+            ✕
+          </button>
+        </div>
+
+        <div style={{ flex:1, overflow:"auto", padding:"14px 18px" }}>
+          {state.loading ? (
+            <div style={{ textAlign:"center", color:"var(--muted)", padding:"40px 0", fontSize:12 }}>
+              Mengambil Top SQL dari OCI AWR…
+            </div>
+          ) : state.error ? (
+            <div style={{ background:"rgba(239,68,68,.06)", border:"1px solid rgba(239,68,68,.3)",
+              borderRadius:8, padding:"14px 16px" }}>
+              <div style={{ fontSize:12, color:"#F87171", fontWeight:600, marginBottom:6 }}>
+                {state.code === "not_managed"
+                  ? "Database belum terdaftar di OCI Database Management"
+                  : "Gagal mengambil data"}
+              </div>
+              <div style={{ fontSize:11, color:"var(--muted)", lineHeight:1.6 }}>{state.error}</div>
+              {consoleUrl && (
+                <a href={consoleUrl} target="_blank" rel="noreferrer"
+                  style={{ display:"inline-block", marginTop:10, fontSize:11,
+                    color:"#60A5FA", textDecoration:"none" }}>
+                  Buka database di OCI Console ↗
+                </a>
+              )}
+            </div>
+          ) : (
+            <>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:14, alignItems:"center",
+                fontSize:10, color:"var(--muted)", marginBottom:10 }}>
+                <span>DB: <b style={{ color:"var(--text3)" }}>{state.data.db_unique_name}</b></span>
+                <span>Snapshot: {state.data.snapshots?.begin === state.data.snapshots?.end
+                  ? state.data.snapshots?.end
+                  : `${state.data.snapshots?.begin} → ${state.data.snapshots?.end}`}</span>
+                {state.data.snapshots?.end_time && (
+                  <span>s/d {fmtTime(state.data.snapshots.end_time)}</span>
+                )}
+                <span>AWR DB: {state.data.awr_db_id}</span>
+              </div>
+
+              {(state.data.sql || []).map((s, i) => (
+                <div key={s.sql_id} style={{ border:"1px solid var(--border2)", borderRadius:8,
+                  marginBottom:10, background:"var(--bg3)", overflow:"hidden" }}>
+                  <div style={{ display:"flex", flexWrap:"wrap", alignItems:"center", gap:8,
+                    padding:"8px 12px", borderBottom:"1px solid var(--border)" }}>
+                    <span style={{ fontSize:10, fontWeight:800, color:"#F59E0B" }}>#{i + 1}</span>
+                    <code style={{ fontSize:11, color:"#93C5FD" }}>{s.sql_id}</code>
+                    {s.activity_pct != null ? (
+                      <>
+                        <span style={{ fontSize:10, color:"var(--muted)" }}>
+                          activity <b style={{ color:"var(--text3)" }}>{s.activity_pct}%</b>
+                        </span>
+                        <span style={{ fontSize:10, color:"var(--muted)" }}>
+                          sampled <b style={{ color:"var(--text3)" }}>{s.sampled}</b>
+                        </span>
+                        {s.event && (
+                          <span title={s.event} style={{ fontSize:9, color:"#FCA5A5",
+                            background:"rgba(239,68,68,.08)", border:"1px solid rgba(239,68,68,.25)",
+                            borderRadius:4, padding:"1px 6px", maxWidth:240, overflow:"hidden",
+                            textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                            {s.event}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize:10, color:"var(--muted)" }}>
+                          elapsed <b style={{ color:"var(--text3)" }}>{s.elapsed_s}s</b>
+                        </span>
+                        <span style={{ fontSize:10, color:"var(--muted)" }}>
+                          cpu <b style={{ color:"var(--text3)" }}>{s.cpu_s}s</b>
+                        </span>
+                        <span style={{ fontSize:10, color:"var(--muted)" }}>
+                          execs <b style={{ color:"var(--text3)" }}>{s.execs}</b>
+                        </span>
+                      </>
+                    )}
+                    {s.pdb && (
+                      <span style={{ fontSize:9, color:"var(--text3)", background:"var(--surface2)",
+                        border:"1px solid var(--border2)", borderRadius:4, padding:"1px 6px" }}>
+                        PDB {s.pdb}
+                      </span>
+                    )}
+                    <span style={{ flex:1 }}/>
+                    {copyBtn(s.sql_id, s.text || "", "📋 Copy SQL")}
+                    {copyBtn("id:" + s.sql_id, s.sql_id, "Copy ID")}
+                  </div>
+                  <pre style={{ margin:0, padding:"10px 12px", fontSize:11, lineHeight:1.55,
+                    color:"var(--text3)", whiteSpace:"pre-wrap", wordBreak:"break-word",
+                    fontFamily:"'Courier New', monospace", maxHeight:220, overflow:"auto" }}>
+                    {s.text || "(teks SQL tidak tersedia)"}
+                  </pre>
+                  {!s.text_full && (
+                    <div style={{ padding:"0 12px 8px", fontSize:9, color:"#F59E0B" }}>
+                      Teks dari laporan {state.data.source === "awr" ? "AWR" : "ASH"} (mungkin terpotong).
+                      Buka PerfHub untuk versi penuh.
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div style={{ fontSize:9, color:"var(--muted2)", lineHeight:1.5 }}>
+                Sumber: {state.data.source === "awr"
+                  ? `AWR snapshot ${state.data.snapshots?.begin} → ${state.data.snapshots?.end}`
+                  : "Active Session History (ASH) 1 jam terakhir"}{" "}
+                (interval snapshot ±{state.data.snapshots?.interval_min || 60} menit), bukan data
+                real-time. Untuk analisis live, buka PerfHub.
+              </div>
+            </>
+          )}
+        </div>
+
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end", alignItems:"center",
+          padding:"12px 18px", borderTop:"1px solid var(--border)" }}>
+          {consoleUrl && (
+            <a href={consoleUrl} target="_blank" rel="noreferrer"
+              style={{ fontSize:11, color:"#60A5FA", textDecoration:"none", marginRight:"auto" }}>
+              Buka PerfHub di OCI Console ↗
+            </a>
+          )}
+          <button onClick={onClose}
+            style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
+              borderRadius:6, color:"var(--muted)", fontFamily:"inherit",
+              fontSize:11, padding:"7px 14px", cursor:"pointer" }}>
+            Tutup
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Label badge colors ─────────────────────────────── */
 const LABEL_COLORS = [
   "#3B82F6","#8B5CF6","#EC4899","#F97316","#06B6D4",
@@ -317,7 +561,7 @@ function labelColor(key) {
 }
 
 /* ─── Alert Row ──────────────────────────────────────── */
-function AlertRow({ a, isNew, eskalasi, onLaporkan }) {
+function AlertRow({ a, isNew, eskalasi, onLaporkan, onTopSql }) {
   const [expanded, setExpanded] = useState(false);
   const fc      = folderColor(a.folder);
   const sev     = getSeverity(a.name, a.severity);
@@ -335,6 +579,7 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan }) {
   const hiddenCount     = allLabelEntries.length - visibleEntries.length;
 
   const rowBg = isOld ? "var(--row-alt)" : isNew ? "rgba(239,68,68,.04)" : "none";
+  const perfUrl = perfHubUrl(a);
 
   return (
     <>
@@ -434,23 +679,47 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan }) {
 
         {/* action */}
         <td style={{ padding:"8px 10px", verticalAlign:"top", paddingTop:8, textAlign:"right" }}>
-          {done ? (
-            <span style={{ fontSize:10,color:"#22C55E",fontWeight:600,
-              display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end" }}>
-              <span>✓</span> Dieskalasikan
-            </span>
-          ) : (
-            <button onClick={()=>onLaporkan(a)}
-              style={{ background:isOld?"rgba(60,30,30,.4)":"rgba(177,18,38,.15)",
-                border:isOld?"1px solid #3A1A1A":"1px solid #B11226",
-                borderRadius:5,color:isOld?"#5A3A3A":"#F87171",
-                fontFamily:"inherit",fontSize:10,fontWeight:600,
-                padding:"4px 10px",cursor:"pointer",whiteSpace:"nowrap" }}
-              onMouseEnter={e=>e.currentTarget.style.background=isOld?"rgba(60,30,30,.7)":"rgba(177,18,38,.3)"}
-              onMouseLeave={e=>e.currentTarget.style.background=isOld?"rgba(60,30,30,.4)":"rgba(177,18,38,.15)"}>
-              📣 Laporkan
-            </button>
-          )}
+          <div style={{ display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", whiteSpace:"nowrap" }}>
+            {dbOcid(a) && (
+              <button onClick={()=>onTopSql(a)}
+                title="Lihat Top SQL dari OCI AWR"
+                style={{ display:"inline-flex", alignItems:"center", gap:3,
+                  border:"1px solid var(--border2)", borderRadius:5,
+                  color:"var(--text3)", background:"var(--surface2)",
+                  fontFamily:"inherit", fontSize:10, fontWeight:600,
+                  padding:"4px 9px", cursor:"pointer", whiteSpace:"nowrap" }}>
+                Top SQL
+              </button>
+            )}
+            {perfUrl && (
+              <a href={perfUrl} target="_blank" rel="noreferrer"
+                title="Buka Performance Hub di OCI Console"
+                style={{ display:"inline-flex", alignItems:"center", gap:3,
+                  border:"1px solid var(--border2)", borderRadius:5,
+                  color:"var(--text3)", background:"var(--surface2)",
+                  fontSize:10, fontWeight:600, padding:"4px 9px",
+                  textDecoration:"none", whiteSpace:"nowrap" }}>
+                Perf Hub <span style={{ fontSize:9, color:"var(--muted2)" }}>↗</span>
+              </a>
+            )}
+            {done ? (
+              <span style={{ fontSize:10,color:"#22C55E",fontWeight:600,
+                display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end" }}>
+                <span>✓</span> Dieskalasikan
+              </span>
+            ) : (
+              <button onClick={()=>onLaporkan(a)}
+                style={{ background:isOld?"rgba(60,30,30,.4)":"rgba(177,18,38,.15)",
+                  border:isOld?"1px solid #3A1A1A":"1px solid #B11226",
+                  borderRadius:5,color:isOld?"#5A3A3A":"#F87171",
+                  fontFamily:"inherit",fontSize:10,fontWeight:600,
+                  padding:"4px 10px",cursor:"pointer",whiteSpace:"nowrap" }}
+                onMouseEnter={e=>e.currentTarget.style.background=isOld?"rgba(60,30,30,.7)":"rgba(177,18,38,.3)"}
+                onMouseLeave={e=>e.currentTarget.style.background=isOld?"rgba(60,30,30,.4)":"rgba(177,18,38,.15)"}>
+                📣 Laporkan
+              </button>
+            )}
+          </div>
         </td>
       </tr>
 
@@ -572,7 +841,7 @@ function buildDailyReport(alerts, opts) {
     const { total, success, failed, rate, health, period, generated, fetchedAt } = backupStatus;
     const icon = health === "HEALTHY" ? "🟢" : health === "WARNING" ? "🟡" : health ? "🔴" : "";
     // Tanggal period yang dicek
-    const periodStr = period || (fetchedAt ? new Date(fetchedAt).toISOString().slice(0,10) : "-");
+    const periodStr = period || (fetchedAt ? localISODate(fetchedAt) : "-");
     // Waktu generate dari log, fallback ke fetchedAt
     const generatedStr = generated || (fetchedAt
       ? new Date(fetchedAt).toLocaleString("id-ID", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }) + " WIB"
@@ -608,7 +877,7 @@ ${sep2}`;
 }
 
 function DailyReportModal({ alerts, onClose }) {
-  const today = new Date().toISOString().slice(0,10);
+  const today = localISODate();
   const [tanggal,       setTanggal]       = useState(today);
   const [shift,         setShift]         = useState("malam");
   const [engineer,      setEngineer]      = useState(
@@ -633,7 +902,7 @@ function DailyReportModal({ alerts, onClose }) {
         if (shift !== "1") {
           const prev = new Date(tanggal);
           prev.setDate(prev.getDate() - 1);
-          datesToFetch = [prev.toISOString().slice(0,10), tanggal];
+          datesToFetch = [localISODate(prev), tanggal];
         }
 
         // Fetch semua task dari kedua tanggal
@@ -653,9 +922,10 @@ function DailyReportModal({ alerts, onClose }) {
         // Filter berdasarkan jam kerja shift
         const filtered = alertClosed.filter(t => {
           const taskDate = (t.date || "").slice(0,10);
-          const taskTime = t.end || t.start || "00:00"; // pakai jam selesai
-          const [hh, mm] = taskTime.split(":").map(Number);
-          const mins = hh * 60 + (mm||0);
+          const taskTime = t.end || t.start || "00.00"; // pakai jam selesai
+          // Data menyimpan jam dengan separator titik, misal "17.41" — bukan "17:41".
+          const [hh, mm] = taskTime.replace(":", ".").split(".").map(Number);
+          const mins = (hh||0) * 60 + (mm||0);
 
           if (shift === "1") {
             // Shift 1: tgl sama, jam 09:00 (540) – 21:00 (1260)
@@ -664,7 +934,7 @@ function DailyReportModal({ alerts, onClose }) {
             // Shift 2: tgl kemarin jam ≥ 21:00 (1260) ATAU tgl hari ini jam ≤ 09:00 (540)
             const prevDate = (() => {
               const d = new Date(tanggal); d.setDate(d.getDate()-1);
-              return d.toISOString().slice(0,10);
+              return localISODate(d);
             })();
             return (taskDate === prevDate && mins >= 1260) ||
                    (taskDate === tanggal  && mins <= 540);
@@ -685,6 +955,11 @@ function DailyReportModal({ alerts, onClose }) {
       return cached ? JSON.parse(cached) : null;
     } catch { return null; }
   });
+  // true selama fetch log terbaru belum selesai. Dipakai untuk menahan tombol
+  // Copy supaya tidak keburu meng-copy data cache lama (misal period backup
+  // kemarin lusa, bukan kemarin) kalau user klik Copy sesaat setelah halaman
+  // dibuka, sebelum fetch di bawah ini selesai meng-update backupStatus.
+  const [backupLoading, setBackupLoading] = useState(true);
 
   // Fetch terbaru dari log sebagai update (tidak blocking — cache sudah terisi)
   useEffect(() => {
@@ -710,7 +985,8 @@ function DailyReportModal({ alerts, onClose }) {
           try { localStorage.setItem("pr_backup_status_cache", JSON.stringify(parsed)); } catch(_){}
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setBackupLoading(false));
   }, []);
 
   const text = buildDailyReport(alerts, {
@@ -833,13 +1109,14 @@ function DailyReportModal({ alerts, onClose }) {
 
         {/* actions */}
         <div style={{ display:"flex", gap:10, padding:"0 16px 16px", flexShrink:0 }}>
-          <button onClick={doCopy}
-            style={{ flex:1, background: copied ? "#15803D" : "#B11226",
-              border:"none", borderRadius:6, color:"#fff", fontFamily:"inherit",
-              fontSize:12, fontWeight:600, padding:"9px 0", cursor:"pointer",
+          <button onClick={doCopy} disabled={backupLoading}
+            style={{ flex:1, background: backupLoading ? "var(--surface2)" : copied ? "#15803D" : "#B11226",
+              border:"none", borderRadius:6, color: backupLoading ? "var(--muted)" : "#fff", fontFamily:"inherit",
+              fontSize:12, fontWeight:600, padding:"9px 0",
+              cursor: backupLoading ? "not-allowed" : "pointer",
               transition:"background .2s", display:"flex", alignItems:"center",
               justifyContent:"center", gap:6 }}>
-            {copied ? "✓ Berhasil Dicopy!" : "📋 Copy Laporan"}
+            {backupLoading ? "⏳ Memuat data terbaru…" : copied ? "✓ Berhasil Dicopy!" : "📋 Copy Laporan"}
           </button>
           <button onClick={onClose}
             style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
@@ -854,7 +1131,7 @@ function DailyReportModal({ alerts, onClose }) {
 }
 
 /* ─── Alert Table (reusable section) ────────────────── */
-function AlertTable({ alerts, newSet, eskalasi, onLaporkan, title, titleColor, headerBg, dim }) {
+function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onTopSql, title, titleColor, headerBg, dim }) {
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginTop:14, border:`1px solid ${dim?"#1E0A0A":"var(--border)"}`,
@@ -901,7 +1178,8 @@ function AlertTable({ alerts, newSet, eskalasi, onLaporkan, title, titleColor, h
               <AlertRow key={i} a={a}
                 isNew={newSet.has(a._key)}
                 eskalasi={eskalasi}
-                onLaporkan={onLaporkan}/>
+                onLaporkan={onLaporkan}
+                onTopSql={onTopSql}/>
             ))}
           </tbody>
         </table>
@@ -949,7 +1227,7 @@ async function createTaskFromAlert(alert) {
     id:          `alert_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
     customer:    folder,
     description: `[ALERT] ${shortName(alert.name)}${resource}`,
-    date:        new Date().toISOString().split("T")[0],
+    date:        localISODate(),
     start:       new Date().toLocaleTimeString("id-ID", { hour:"2-digit", minute:"2-digit" }),
     end:         "",
     pic,
@@ -994,7 +1272,7 @@ async function syncAlertsToDailyTask(alerts) {
       id:          `alert_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
       customer:    folder,
       description: desc,
-      date:        new Date().toISOString().split("T")[0],
+      date:        localISODate(),
       start:       new Date().toLocaleTimeString("id-ID", { hour:"2-digit", minute:"2-digit" }),
       end:         "",
       pic,
@@ -1005,7 +1283,7 @@ async function syncAlertsToDailyTask(alerts) {
     // Same reasoning as the auto-close log below — without this,
     // "Tasks Created" in Engineer Activity KPI undercounts alert-generated
     // tasks because it only reads the activity log, not /api/tasks directly.
-    logActivity("Create Task", "task", `[${folder}] ${desc}`);
+    logActivity("Create Ticket", "task", `[${folder}] ${desc}`);
     recordTicketCreated(key);
     newKeys.add(key);
     added++;
@@ -1032,7 +1310,7 @@ async function syncAlertsToDailyTask(alerts) {
       // Auto-close by the alert sync must also be recorded, otherwise
       // Engineer Activity KPI's "Tasks Closed" undercounts — it only reads
       // from the activity log, not from task status directly.
-      logActivity("Update Task Status", "task", `${t.description} → Close`);
+      logActivity("Update Ticket Status", "task", `${t.description} → Close`);
       resolved++;
     }
   }
@@ -1047,10 +1325,12 @@ export default function AlertPage() {
   const [allAlerts,  setAllAlerts]  = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [alertsError, setAlertsError] = useState("");
   const [search,     setSearch]     = useState("");
   const [folderFil,  setFolderFil]  = useState("");
   const [modal,      setModal]      = useState(null);
   const [showReport, setShowReport] = useState(false);
+  const [topSqlFor, setTopSqlFor] = useState(null);
   const [muted,      setMutedState] = useState(() => isAlertMuted());
   const [toast,      setToast]      = useState(null); // {msg, count}
   // eskalasi: Set of _key strings — shared di backend supaya semua
@@ -1073,8 +1353,12 @@ export default function AlertPage() {
     setLoading(true);
     fetch("/api/grafana/alerts")
       .then(r => r.json())
-      .then(d => { setAllAlerts(d.alerts||[]); setLastUpdate(new Date()); })
-      .catch(() => {})
+      .then(d => {
+        setAllAlerts(Array.isArray(d.alerts) ? d.alerts : []);
+        setAlertsError(d.error || "");
+        setLastUpdate(new Date());
+      })
+      .catch(() => setAlertsError("Tidak dapat menghubungi backend"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -1245,6 +1529,14 @@ export default function AlertPage() {
         </div>
       </div>
 
+      {alertsError && (
+        <div style={{ margin:"8px 24px 0", padding:"8px 12px", borderRadius:6,
+          background:"rgba(234,179,8,.08)", border:"1px solid rgba(234,179,8,.35)",
+          color:"#EAB308", fontSize:11, flexShrink:0 }}>
+          ⚠ Alert Grafana tidak tersedia — {alertsError}
+        </div>
+      )}
+
       {/* ── Stat bar ── */}
       <div style={{ display:"flex", gap:10, padding:"10px 24px 8px", flexShrink:0,
         background:"var(--bg)" }}>
@@ -1287,6 +1579,7 @@ export default function AlertPage() {
               <AlertTable
                 alerts={activeAlerts} newSet={newSet}
                 eskalasi={eskalasi} onLaporkan={setModal}
+                onTopSql={setTopSqlFor}
                 title={`Active Alerts  (< 12 jam) — ${activeAlerts.length} firing`}
                 titleColor="#EF4444"
                 headerBg="var(--bg3)"
@@ -1298,6 +1591,7 @@ export default function AlertPage() {
               <AlertTable
                 alerts={oldAlerts} newSet={newSet}
                 eskalasi={eskalasi} onLaporkan={setModal}
+                onTopSql={setTopSqlFor}
                 title={`Long Running  (> 12 jam) — ${oldAlerts.length} alert`}
                 titleColor="#6B3A3A"
                 headerBg="#0A0505"
@@ -1315,6 +1609,11 @@ export default function AlertPage() {
           alreadyEskalasi={eskalasi.has(modal._key)}
           onClose={() => setModal(null)}
           onEskalasi={(key, a) => { markEskalasi(key, a); }}/>
+      )}
+
+      {/* ── Top SQL Modal ── */}
+      {topSqlFor && (
+        <TopSqlModal alert={topSqlFor} onClose={() => setTopSqlFor(null)}/>
       )}
 
       {/* ── Daily Report Modal ── */}

@@ -178,14 +178,25 @@ function DashIllustration() {
 export default function LoginPage({ onLogin }) {
   const REMEMBER_KEY = "pr_remember_credentials";
 
-  // Load saved credentials on mount
-  const saved = (() => {
-    try { return JSON.parse(localStorage.getItem(REMEMBER_KEY) || "{}"); } catch { return {}; }
+  // Only usernames may be remembered — never passwords.
+  React.useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "{}");
+      if (saved.password) {
+        localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username: saved.username || "" }));
+      }
+    } catch (_) {}
+  }, []);
+
+  const savedUsername = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(REMEMBER_KEY) || "{}").username || "";
+    } catch { return ""; }
   })();
 
-  const [username,  setUsername]  = useState(saved.username || "");
-  const [password,  setPassword]  = useState(saved.password || "");
-  const [remember,  setRemember]  = useState(!!saved.username);
+  const [username,  setUsername]  = useState(savedUsername);
+  const [password,  setPassword]  = useState("");
+  const [remember,  setRemember]  = useState(!!savedUsername);
   const [showPwd,   setShowPwd]   = useState(false);
   const [error,     setError]     = useState("");
   const [loading,   setLoading]   = useState(false);
@@ -200,14 +211,14 @@ export default function LoginPage({ onLogin }) {
         body: JSON.stringify({ username, password }),
       });
       const data = await res.json();
-      if (data.ok) {
-        // Save atau hapus credentials sesuai pilihan remember
+      if (data.ok && data.token) {
         if (remember) {
-          localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username, password }));
+          localStorage.setItem(REMEMBER_KEY, JSON.stringify({ username }));
         } else {
           localStorage.removeItem(REMEMBER_KEY);
         }
         sessionStorage.setItem("pr_auth",    "1");
+        sessionStorage.setItem("pr_token",   data.token);
         sessionStorage.setItem("pr_user",    data.username);
         sessionStorage.setItem("pr_display", data.display);
         sessionStorage.setItem("pr_role",    data.role);
@@ -325,7 +336,7 @@ export default function LoginPage({ onLogin }) {
             ))}
           </div>
           <div style={{fontSize:10,color:"#363636",textAlign:"center"}}>
-            ICS Compute · Portal Report · v2.0
+            ICS Compute · Portal Report · v2.1
           </div>
         </div>
       </div>

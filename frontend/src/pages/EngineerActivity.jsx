@@ -6,8 +6,8 @@ function buildKpiRows(engineers, logs) {
     const ul    = logs.filter(l => l.username === u.username);
     const rep   = ul.filter(l => l.category === "report").length;
     const alert = ul.filter(l => l.category === "alert" && l.action === "Laporkan Alert").length;
-    const taskC = ul.filter(l => l.category === "task"  && l.action === "Create Task").length;
-    const taskD = ul.filter(l => l.category === "task"  && l.action === "Update Task Status" && l.detail?.includes("→ Close")).length;
+    const taskC = ul.filter(l => l.category === "task"  && ["Create Task","Create Ticket"].includes(l.action)).length;
+    const taskD = ul.filter(l => l.category === "task"  && ["Update Task Status","Update Ticket Status"].includes(l.action) && l.detail?.includes("→ Close")).length;
     return { username: u.username, display: u.display, total: ul.length, reports: rep, alerts: alert, taskCreated: taskC, taskClosed: taskD };
   });
 }
@@ -121,8 +121,8 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
   const ul    = logs.filter(l => l.username === u.username);
   const rep   = ul.filter(l => l.category === "report").length;
   const alert = ul.filter(l => l.category === "alert" && l.action === "Laporkan Alert").length;
-  const taskC = ul.filter(l => l.category === "task"   && l.action === "Create Task").length;
-  const taskD = ul.filter(l => l.category === "task"   && l.action === "Update Task Status" && l.detail?.includes("→ Close")).length;
+  const taskC = ul.filter(l => l.category === "task"   && ["Create Task","Create Ticket"].includes(l.action)).length;
+  const taskD = ul.filter(l => l.category === "task"   && ["Update Task Status","Update Ticket Status"].includes(l.action) && l.detail?.includes("→ Close")).length;
   const total = ul.length;
 
   const initials = u.display.slice(0, 2).toUpperCase();
@@ -174,7 +174,7 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
 }
 
 export default function EngineerActivity({ navigate }) {
-  const role    = sessionStorage.getItem("pr_role") || "admin";
+  const role    = sessionStorage.getItem("pr_role") || "engineer";
   const user    = sessionStorage.getItem("pr_user") || "admin";
   const isAdmin = role === "admin" || user === "admin";
 
@@ -223,8 +223,8 @@ export default function EngineerActivity({ navigate }) {
   const totalActivities = filtered.length;
   const totalReports    = filtered.filter(l => l.category === "report").length;
   const totalAlerts     = filtered.filter(l => l.category === "alert" && l.action === "Laporkan Alert").length;
-  const totalTaskCreate = filtered.filter(l => l.category === "task"  && l.action === "Create Task").length;
-  const totalTaskClose  = filtered.filter(l => l.category === "task"  && l.action === "Update Task Status" && l.detail?.includes("→ Close")).length;
+  const totalTaskCreate = filtered.filter(l => l.category === "task"  && ["Create Task","Create Ticket"].includes(l.action)).length;
+  const totalTaskClose  = filtered.filter(l => l.category === "task"  && ["Update Task Status","Update Ticket Status"].includes(l.action) && l.detail?.includes("→ Close")).length;
 
   const engineers = users.filter(u => u.role === "engineer");
 

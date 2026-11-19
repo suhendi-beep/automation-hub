@@ -46,6 +46,24 @@ export default function FilesPage({ customer, navigate }) {
       .catch(() => setLoading(false));
   }, [customer?.id]);
 
+  const downloadFile = async (f) => {
+    try {
+      const res = await fetch(f.download || `/api/download/reports/${encodeURIComponent(f.name)}`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (_) {
+      // The global fetch wrapper already handles 401/expired sessions.
+    }
+  };
+
   if (!customer) return null;
 
   // Build folder structure
@@ -167,12 +185,12 @@ export default function FilesPage({ customer, navigate }) {
                               <span style={{fontSize:11,color:"var(--muted)",flexShrink:0,minWidth:65,textAlign:"right"}}>
                                 {fmtSize(f.size_kb)}
                               </span>
-                              <a href={"/api/download/reports/"+f.name} download={f.name}
-                                style={F.dlBtn}
+                              <button onClick={() => downloadFile(f)}
+                                style={{...F.dlBtn, cursor:"pointer", fontFamily:"inherit"}}
                                 onMouseEnter={e=>{e.currentTarget.style.background="#a80000"}}
                                 onMouseLeave={e=>{e.currentTarget.style.background="#8b0000"}}>
                                 ⬇ Download
-                              </a>
+                              </button>
                             </div>
                           );
                         })
@@ -217,12 +235,12 @@ export default function FilesPage({ customer, navigate }) {
                         <span style={{fontSize:11,color:"var(--muted)",flexShrink:0,minWidth:65,textAlign:"right"}}>
                           {fmtSize(f.size_kb)}
                         </span>
-                        <a href={"/api/download/reports/"+f.name} download={f.name}
-                          style={F.dlBtn}
-                          onMouseEnter={e=>e.currentTarget.style.background="#a80000"}
-                          onMouseLeave={e=>e.currentTarget.style.background="#8b0000"}>
+                        <button onClick={() => downloadFile(f)}
+                          style={{...F.dlBtn, cursor:"pointer", fontFamily:"inherit"}}
+                          onMouseEnter={e=>{e.currentTarget.style.background="#a80000"}}
+                          onMouseLeave={e=>{e.currentTarget.style.background="#8b0000"}}>
                           ⬇ Download
-                        </a>
+                        </button>
                       </div>
                     ))}
                   </div>

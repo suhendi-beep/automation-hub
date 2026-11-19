@@ -30,4 +30,4 @@ COPY . .
 RUN mkdir -p /app/shared/reports /app/shared/screenshots /app/shared/logs /app/shared/cookies
 
 EXPOSE 5000
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--workers", "1", "--threads", "4", "--timeout", "120", "--bind", "0.0.0.0:5000", "--access-logfile", "-", "--error-logfile", "-", "app:app"]

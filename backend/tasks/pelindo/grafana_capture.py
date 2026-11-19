@@ -18,8 +18,11 @@ from pptx.util import Inches
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 
-GRAFANA_USER  = os.getenv("GRAFANA_USER", "icscompute")
-GRAFANA_PASS  = os.getenv("GRAFANA_PASS", "icsW4tch!")
+GRAFANA_USER  = os.getenv("GRAFANA_USER", "")
+GRAFANA_PASS  = os.getenv("GRAFANA_PASS", "")
+
+if not GRAFANA_USER or not GRAFANA_PASS:
+    raise RuntimeError("GRAFANA_USER/GRAFANA_PASS belum dikonfigurasi (set via SSM atau env)")
 TEMPLATE_FILE = "/app/shared/template_grafana.pptx"
 
 URL_LIST = [
@@ -124,6 +127,7 @@ def run(log_path=None, args=None):
 
     from chrome_helper import get_driver
     driver = get_driver(1920, 1080)
+    driver.set_script_timeout(30)  # Set script timeout to 30 seconds
     wait   = WebDriverWait(driver, 60)
     captured = []
 
@@ -148,8 +152,14 @@ def run(log_path=None, args=None):
             time.sleep(10)
             driver.execute_script("window.scrollTo(0,0)")
             time.sleep(2)
-            driver.execute_script("document.body.style.zoom='90%'")
-            time.sleep(2)
+            
+            # Try to zoom, skip if timeout
+            try:
+                driver.execute_script("document.body.style.zoom='90%'")
+                time.sleep(2)
+            except Exception as zoom_err:
+                log(f"  Warning: zoom failed ({zoom_err}), continuing...")
+                time.sleep(1)
 
             png   = driver.get_screenshot_as_png()
             image = Image.open(BytesIO(png))
