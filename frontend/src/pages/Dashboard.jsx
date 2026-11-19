@@ -135,7 +135,7 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
   const critical = alerts.filter(a => a.severity === "critical").length;
   const warning  = alerts.filter(a => a.severity === "warning").length;
   const info     = alerts.filter(a => !["critical", "warning"].includes(a.severity)).length;
-  const activeAlerts = alerts.filter(a => a.duration_min >= 5);
+  const activeAlerts = alerts;
 
   const lastDailyRun = history.find(h => h.automation === "daily_ilcs_status");
   const dailyOk = lastDailyRun ? lastDailyRun.size_kb > 0 : null;

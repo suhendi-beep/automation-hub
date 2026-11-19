@@ -1419,10 +1419,10 @@ export default function AlertPage() {
   useEffect(() => onAlertMuteChange(setMutedState), []);
   const toggleMuted = () => setAlertMuted(!muted); // persists + notifies AlertWatcher
 
-  // add _key, filter hanya > 5 menit (tidak ada batas atas)
+  // Tampilkan semua alert aktif (termasuk yang baru firing < 5 menit);
+  // threshold 5 menit hanya dipakai untuk auto-create/auto-close ticket.
   const withKey = allAlerts
-    .map(a => ({ ...a, _key: `${a.name}||${a.resource}||${a.active_at}` }))
-    .filter(a => a.duration_min >= 5);
+    .map(a => ({ ...a, _key: `${a.name}||${a.resource}||${a.active_at}` }));
 
   const newSet = new Set(withKey.filter(a => a.duration_min <= 30).map(a => a._key));
 
@@ -1437,11 +1437,13 @@ export default function AlertPage() {
     return true;
   });
 
-  // sort: new first, then active (<12h) by duration desc, then old (>12h) at bottom
+  // sort: new first (freshest on top), then active (<12h) by duration desc,
+  // then old (>12h) at bottom
   const activeAlerts = filtered.filter(a => a.duration_min <= 720)
     .sort((a,b) => {
       const aN = newSet.has(a._key), bN = newSet.has(b._key);
       if (aN !== bN) return aN ? -1 : 1;
+      if (aN) return a.duration_min - b.duration_min;
       return b.duration_min - a.duration_min;
     });
   const oldAlerts = filtered.filter(a => a.duration_min > 720)
@@ -1460,7 +1462,7 @@ export default function AlertPage() {
         <div>
           <div style={{ fontSize:15, fontWeight:700, color:"var(--text2)" }}>Alert Monitor</div>
           <div style={{ fontSize:10, color:"var(--muted2)", marginTop:2 }}>
-            Grafana alerts firing &gt; 5 menit
+            Grafana alerts aktif (real-time)
             {lastUpdate && (
               <span style={{ marginLeft:8, color:"var(--muted3)" }}>
                 · {lastUpdate.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}
@@ -1541,9 +1543,9 @@ export default function AlertPage() {
       <div style={{ display:"flex", gap:10, padding:"10px 24px 8px", flexShrink:0,
         background:"var(--bg)" }}>
         {[
-          { label:"Firing (> 5m)",  value: withKey.length,                                                                  color:"#EF4444" },
+          { label:"Firing",        value: withKey.length,                                                                  color:"#EF4444" },
           { label:"Active < 12h",  value: activeAlerts.length,                                                             color:"#EF4444" },
-          { label:"New (5–30m)",   value: newSet.size,                                                                     color:"#F87171" },
+          { label:"New (≤30m)",    value: newSet.size,                                                                     color:"#F87171" },
           { label:"Dieskalasikan", value: [...eskalasi].filter(k=>withKey.find(a=>a._key===k)).length,                     color:"#22C55E" },
           { label:"> 12 Jam",      value: oldAlerts.length,                                                                color:"#6B3A3A", dim:true },
         ].map(s => (
@@ -1570,7 +1572,7 @@ export default function AlertPage() {
         ) : withKey.length === 0 ? (
           <div style={{ textAlign:"center", paddingTop:60 }}>
             <div style={{ fontSize:28, marginBottom:8 }}>✅</div>
-            <div style={{ fontSize:13, color:"var(--muted)" }}>Tidak ada alert firing &gt; 10 menit</div>
+            <div style={{ fontSize:13, color:"var(--muted)" }}>Tidak ada alert aktif</div>
           </div>
         ) : (
           <>

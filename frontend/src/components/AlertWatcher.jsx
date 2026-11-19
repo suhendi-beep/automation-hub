@@ -74,7 +74,7 @@ export default function AlertWatcher() {
         fetch("/api/alerts/eskalasi").then(r => r.json()).catch(() => ({})),
       ]).then(([alertsRes, eskalasiMap]) => {
         if (cancelled) return;
-        const alerts   = (alertsRes.alerts || []).filter(a => a.duration_min >= 5);
+        const alerts   = alertsRes.alerts || [];
         const eskalasi = new Set(Object.keys(eskalasiMap || {}));
 
         // ── Toast untuk setiap alert baru yang belum pernah terlihat ──
