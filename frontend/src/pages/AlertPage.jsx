@@ -468,6 +468,7 @@ const MINI_BTN = {
   color:"var(--text3)", background:"var(--surface2)",
   fontFamily:"inherit", fontSize:10, fontWeight:600,
   padding:"4px 9px", cursor:"pointer", whiteSpace:"nowrap",
+  boxShadow:"var(--shadow-btn)",
 };
 
 function copyToClipboard(text, done) {
@@ -1035,12 +1036,12 @@ function HealthCheckModal({ alert, onClose }) {
   const prom = d?.prom;
 
   const badge = !probe
-    ? { text: "-", color: "#6B7280" }
+    ? { text: "-", color: "var(--muted3)" }
     : probe.ok
-      ? { text: "HEALTHY", color: "#067647" }
+      ? { text: "HEALTHY", color: "var(--green)" }
       : probe.reachable
-        ? { text: "RESPONDING, WITH ERRORS", color: "#B54708" }
-        : { text: "NOT RESPONDING", color: "#B42318" };
+        ? { text: "RESPONDING, WITH ERRORS", color: "var(--amber)" }
+        : { text: "NOT RESPONDING", color: "var(--red)" };
 
   const card = { background:"var(--bg3)", border:"1px solid var(--border)",
     borderRadius:8, padding:"10px 12px" };
@@ -2171,7 +2172,8 @@ function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onTopSql, onEvidence
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginTop:14, border:"1px solid var(--border)",
-      borderRadius:9, overflow:"hidden", background:"var(--bg2)" }}>
+      borderRadius:12, overflow:"hidden", background:"var(--bg2)",
+      boxShadow:"var(--shadow-card)" }}>
       {/* section header */}
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 14px",
         background: headerBg||"var(--bg3)", cursor:"pointer", userSelect:"none",

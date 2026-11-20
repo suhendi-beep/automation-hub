@@ -17,6 +17,7 @@ import SettingsPage from "./pages/SettingsPage.jsx";
 import ReminderNotif from "./components/ReminderNotif.jsx";
 import AlertWatcher  from "./components/AlertWatcher.jsx";
 import OciModal from "./components/OciModal.jsx";
+import AmbientBackground from "./components/AmbientBackground.jsx";
 import Icon from "./components/Icon.jsx";
 import { clearSession } from "./api.js";
 import "./styles.css";
@@ -99,16 +100,7 @@ export default function App() {
   const [activeLog,setActiveLog]= useState(null);
   const [authed,   setAuthed]   = useState(() => !!(sessionStorage.getItem("pr_auth") && sessionStorage.getItem("pr_token")));
   const [fullCust, setFullCust] = useState(null);
-  const [darkMode, setDarkMode] = useState(() => {
-    try {
-      // One-time reset: every page shares one theme, defaulting to light.
-      if (localStorage.getItem("pr_theme_v") !== "v2") {
-        localStorage.setItem("pr_theme", "light");
-        localStorage.setItem("pr_theme_v", "v2");
-      }
-      return localStorage.getItem("pr_theme") === "dark";
-    } catch { return false; }
-  });
+  const darkMode = true; // Midnight glass is the only theme
   const currentUser = sessionStorage.getItem("pr_user")    || "admin";
   const currentRole = sessionStorage.getItem("pr_role")    || "engineer";
   const displayName = sessionStorage.getItem("pr_display") || currentUser;
@@ -155,16 +147,30 @@ export default function App() {
     };
   }, [authed]);
 
-  // Apply theme class to <body> whenever darkMode changes
+  // Midnight glass is the only theme.
   useEffect(() => {
-    document.body.classList.toggle("light", !darkMode);
-  }, [darkMode]);
+    document.body.classList.remove("light");
+    try { localStorage.setItem("pr_theme", "dark"); } catch {}
+  }, []);
 
-  const toggleDark = () => {
-    const next = !darkMode;
-    setDarkMode(next);
-    try { localStorage.setItem("pr_theme", next ? "dark" : "light"); } catch {}
-  };
+  // Cursor spotlight on the glass.
+  useEffect(() => {
+    let raf = 0;
+    const onMove = (e) => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        const root = document.documentElement;
+        root.style.setProperty("--mx", e.clientX + "px");
+        root.style.setProperty("--my", e.clientY + "px");
+        raf = 0;
+      });
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   useEffect(() => {
     if (!authed) return;
@@ -186,28 +192,33 @@ export default function App() {
   };
   const refreshOci = () => fetch("/api/oci/session").then(r=>r.json()).then(setOciSess).catch(()=>{});
 
-  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
+  if (!authed) return (
+    <>
+      <AmbientBackground />
+      <LoginPage onLogin={() => setAuthed(true)} />
+    </>
+  );
 
   const meta = PAGE_META[page] || PAGE_META.dashboard;
 
   return (
     <div style={{display:"flex",height:"100vh",overflow:"hidden",
-      background:"var(--bg)",fontFamily:"var(--font)"}}>
+      background:"transparent",fontFamily:"var(--font)"}}>
+      <AmbientBackground />
       <Sidebar
         customers={customers} page={page} navigate={navigate}
         custId={custId} ociSess={ociSess} onOciChange={refreshOci}
         currentUser={currentUser} displayName={displayName}
-        currentRole={currentRole} darkMode={darkMode} toggleDark={toggleDark}
+        currentRole={currentRole}
         collapsed={collapsed}
       />
       <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0}}>
       <Topbar
         meta={meta} ociSess={ociSess} navigate={navigate}
-        darkMode={darkMode} toggleDark={toggleDark}
         collapsed={collapsed} onToggleCollapsed={toggleCollapsed}
       />
-      <main style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minWidth:0}}>
-        {page==="dashboard"       && <Dashboard customers={customers} navigate={navigate} currentUser={currentUser} darkMode={darkMode} toggleDark={toggleDark}/>}
+      <main className="app-main" style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minWidth:0}}>
+        {page==="dashboard"       && <Dashboard customers={customers} navigate={navigate} currentUser={currentUser} darkMode={darkMode}/>}
         {page==="generate-report" && <GenerateReport customers={customers} navigate={navigate} darkMode={darkMode}/>}
         {page==="daily-task"      && <DailyTask customers={customers} navigate={navigate} darkMode={darkMode}/>}
         {page==="alert-monitor"   && <AlertPage darkMode={darkMode}/>}
@@ -220,7 +231,7 @@ export default function App() {
         {page==="credentials" && <CredentialsPage currentRole={currentRole} currentUser={currentUser} ociSession={ociSess} onOciChange={refreshOci}/>}
         {page==="schedules" && <SchedulesPage currentRole={currentRole}/>}
         {page==="logs-page" && <ActivityLogsPage/>}
-        {page==="settings"  && <SettingsPage darkMode={darkMode} toggleDark={toggleDark} currentUser={currentUser} currentRole={currentRole} displayName={displayName}/>}
+        {page==="settings"  && <SettingsPage currentUser={currentUser} currentRole={currentRole} displayName={displayName}/>}
       </main>
       </div>
       {/* Global reminder notifications — shown on all pages */}
@@ -232,7 +243,7 @@ export default function App() {
 }
 
 function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
-  currentUser, displayName, currentRole, darkMode, toggleDark, collapsed }) {
+  currentUser, displayName, currentRole, collapsed }) {
   const [showOci, setShowOci] = useState(false);
   const initials = (displayName || currentUser || "?").slice(0,2).toUpperCase();
   const roleLabel = currentRole === "admin" ? "Administrator" : "Engineer";
@@ -285,7 +296,7 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
         {NAV_GROUPS.map((g) => (
           <div key={g.section}>
             {!collapsed && <div style={SB.section}>{g.section}</div>}
-            {collapsed && <div style={SB.rule}/>}
+            {collapsed && <div className="sb-rule" style={SB.rule}/>}
             {g.items.map((it) => (
               <NavItem key={it.key} icon={it.icon} label={it.label}
                 active={page === it.key} collapsed={collapsed} onClick={() => go(it.key)}/>
@@ -312,14 +323,6 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
               <Icon name={ociSess?.logged_in ? "checkCircle" : "link"} size={14}
                 style={{color: ociSess?.logged_in ? "var(--green)" : "var(--side-muted)"}}/>
             </>
-          )}
-        </button>
-
-        <button className="sb-foot-btn" style={SB.themeBtn} onClick={toggleDark}
-          title={darkMode ? "Switch to light theme" : "Switch to dark theme"}>
-          <Icon name={darkMode ? "sun" : "moon"} size={15}/>
-          {!collapsed && (
-            <span style={{flex:1,textAlign:"left"}}>{darkMode ? "Light theme" : "Dark theme"}</span>
           )}
         </button>
 
@@ -351,8 +354,7 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
   );
 }
 
-function Topbar({ meta, ociSess, navigate,
-  darkMode, toggleDark, collapsed, onToggleCollapsed }) {
+function Topbar({ meta, ociSess, navigate, collapsed, onToggleCollapsed }) {
   const [clock, setClock] = useState(fmtClock);
 
   useEffect(() => {
@@ -361,7 +363,7 @@ function Topbar({ meta, ociSess, navigate,
   }, []);
 
   return (
-    <header style={TB.root}>
+    <header className="app-topbar" style={TB.root}>
       <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
         <button className="tb-icon" style={TB.iconBtn} onClick={onToggleCollapsed}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -390,10 +392,6 @@ function Topbar({ meta, ociSess, navigate,
             boxShadow: ociSess?.logged_in ? "0 0 0 3px var(--green-dim)" : "none"}}/>
           OCI {ociSess?.logged_in ? "connected" : "offline"}
         </button>
-        <button className="tb-icon" style={TB.iconBtn} onClick={toggleDark}
-          title={darkMode ? "Switch to light theme" : "Switch to dark theme"}>
-          <Icon name={darkMode ? "sun" : "moon"} size={15}/>
-        </button>
       </div>
     </header>
   );
@@ -421,7 +419,8 @@ const SB = {
                 display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden",
                 transition:"width .18s ease"},
   brand:       {display:"flex",alignItems:"center",gap:11,padding:"17px 16px 14px"},
-  logoMark:    {width:34,height:34,borderRadius:9,display:"block",flexShrink:0},
+  logoMark:    {width:34,height:34,borderRadius:10,display:"block",flexShrink:0,
+                boxShadow:"0 0 22px -4px rgba(232,194,122,.55)"},
   logoName:    {fontSize:13.5,fontWeight:700,letterSpacing:"-.02em",color:"var(--side-strong)",
                 lineHeight:1.2,whiteSpace:"nowrap"},
   logoSub:     {fontSize:10,color:"var(--side-muted)",marginTop:2,letterSpacing:".01em",
@@ -450,7 +449,7 @@ const SB = {
   itemCollapsed:{justifyContent:"center",padding:"9px 0"},
   itemIcon:    {display:"flex",alignItems:"center",justifyContent:"center",width:18,flexShrink:0},
   itemMark:    {position:"absolute",left:0,top:"50%",transform:"translateY(-50%)",width:2.5,
-                height:16,borderRadius:2,background:"var(--accent)"},
+                height:16,borderRadius:2,background:"linear-gradient(180deg, var(--gold), var(--rose))"},
 
   footer:      {borderTop:"1px solid var(--side-border)",padding:"10px",
                 display:"flex",flexDirection:"column",gap:6},
@@ -468,9 +467,10 @@ const SB = {
                 transition:"background .15s, color .15s"},
   user:        {display:"flex",alignItems:"center",gap:9,marginTop:4,padding:"10px 8px 2px",
                 borderTop:"1px solid var(--side-border)"},
-  avatar:      {width:30,height:30,borderRadius:"50%",background:"var(--accent)",color:"#fff",
+  avatar:      {width:30,height:30,borderRadius:"50%",background:"var(--accent-grad)",color:"#fff",
                 fontSize:10.5,fontWeight:700,display:"flex",alignItems:"center",
-                justifyContent:"center",flexShrink:0,letterSpacing:".02em",border:"none",cursor:"pointer"},
+                justifyContent:"center",flexShrink:0,letterSpacing:".02em",border:"none",cursor:"pointer",
+                boxShadow:"0 0 0 1px rgba(232,194,122,.35), 0 0 18px -4px rgba(225,29,72,.7)"},
   userName:    {display:"block",fontSize:11.5,fontWeight:600,color:"var(--side-strong)",
                 overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.3},
   userRole:    {display:"block",fontSize:9.5,color:"var(--side-muted)",marginTop:1},

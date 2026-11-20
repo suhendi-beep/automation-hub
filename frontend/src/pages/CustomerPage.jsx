@@ -307,7 +307,7 @@ const C = {
 
   tinyBtn: {display:"inline-flex",alignItems:"center",justifyContent:"center",background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--muted)",padding:"4px 6px",borderRadius:5,cursor:"pointer",fontFamily:"var(--font)"},
 
-  logPre:  {flex:1,overflowY:"auto",background:"#0B0D11",border:"1px solid var(--border)",borderRadius:9,fontFamily:"var(--mono)",fontSize:11,lineHeight:1.75,color:"#D5DAE3",padding:"14px 16px",margin:0,whiteSpace:"pre-wrap",wordBreak:"break-word"},
+  logPre:  {flex:1,overflowY:"auto",background:"rgba(10,3,5,.55)",border:"1px solid var(--border)",borderRadius:9,fontFamily:"var(--mono)",fontSize:11,lineHeight:1.75,color:"var(--text3)",padding:"14px 16px",margin:0,whiteSpace:"pre-wrap",wordBreak:"break-word"},
   logEmpty:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",textAlign:"center",padding:32},
 };
 

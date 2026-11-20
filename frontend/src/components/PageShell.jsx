@@ -13,7 +13,7 @@ export default function PageShell({ title, subtitle, actions, children, eyebrow,
         actions={actions}
       />
       <div style={P.content}>
-        <div style={{ maxWidth: 1320, margin: "0 auto" }}>{children}</div>
+        <div style={{ maxWidth: 1440, margin: "0 auto" }}>{children}</div>
       </div>
     </div>
   );
@@ -22,9 +22,11 @@ export default function PageShell({ title, subtitle, actions, children, eyebrow,
 export const card = {
   background: "var(--bg2)",
   border: "1px solid var(--border)",
-  borderRadius: 10,
+  borderRadius: 16,
   padding: "16px 18px",
   boxShadow: "var(--shadow-card)",
+  backdropFilter: "blur(24px) saturate(150%)",
+  WebkitBackdropFilter: "blur(24px) saturate(150%)",
 };
 
 export const btn = {
@@ -32,45 +34,49 @@ export const btn = {
   alignItems: "center",
   justifyContent: "center",
   gap: 6,
-  background: "var(--bg2)",
+  background: "rgba(255,255,255,.05)",
   border: "1px solid var(--border2)",
   color: "var(--text4)",
   fontFamily: "inherit",
   fontSize: 12,
   fontWeight: 500,
   padding: "7px 13px",
-  borderRadius: 7,
+  borderRadius: 10,
   cursor: "pointer",
   whiteSpace: "nowrap",
+  boxShadow: "var(--shadow-btn)",
+  transition: "border-color .2s, background .2s, color .2s, box-shadow .2s",
 };
 
 export const btnPrimary = {
   ...btn,
-  background: "var(--accent)",
-  borderColor: "var(--accent)",
+  background: "var(--accent-grad)",
+  borderColor: "rgba(255,255,255,.14)",
   color: "#fff",
   fontWeight: 600,
+  boxShadow: "0 10px 28px -10px rgba(225,29,72,.65), inset 0 1px 0 rgba(255,255,255,.24)",
 };
 
 export const btnDanger = {
   ...btn,
   color: "var(--red)",
-  borderColor: "var(--border2)",
-  background: "var(--red-dim)",
+  borderColor: "rgba(251,113,133,.3)",
+  background: "rgba(251,113,133,.12)",
 };
 
 export const input = {
   width: "100%",
-  background: "var(--surface2)",
+  background: "rgba(255,255,255,.05)",
   border: "1px solid var(--border2)",
   color: "var(--text)",
   fontFamily: "inherit",
   fontSize: 12,
   padding: "9px 12px",
-  borderRadius: 7,
+  borderRadius: 10,
   outline: "none",
   boxSizing: "border-box",
-  transition: "border-color .15s, box-shadow .15s",
+  boxShadow: "var(--shadow-btn)",
+  transition: "border-color .2s, box-shadow .2s, background .2s",
 };
 
 export const label = {
@@ -94,18 +100,20 @@ export const th = {
   borderBottom: "1px solid var(--border)",
   color: "var(--muted)",
   fontSize: 10,
-  fontWeight: 600,
-  letterSpacing: ".06em",
+  fontWeight: 650,
+  letterSpacing: ".09em",
   textTransform: "uppercase",
-  background: "var(--bg3)",
+  background: "rgba(90,15,28,.26)",
   whiteSpace: "nowrap",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,.06), 0 1px 3px -1px rgba(0,0,0,.6)",
 };
 
 export const td = {
   padding: "11px 14px",
   borderBottom: "1px solid var(--border)",
-  color: "var(--text3)",
+  color: "var(--text4)",
   verticalAlign: "middle",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,.03)",
 };
 
 export const badge = (color, bg) => {

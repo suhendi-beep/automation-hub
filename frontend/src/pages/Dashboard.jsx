@@ -217,11 +217,12 @@ export default function Dashboard({ customers, navigate, currentUser }) {
     <div style={S.root}>
       <div style={S.content}>
         {/* ── HERO ── */}
-        <section style={S.hero}>
+        <div className="chamfer-wrap" style={{marginBottom:16}}>
+        <section className="glass-card chamfer" style={{...S.hero, marginBottom:0}}>
           <span style={S.heroGlow}/>
           <div style={S.heroLeft}>
             <div style={S.heroEyebrow}>{greetingByHour()}, {currentUser || "team"}</div>
-            <h1 style={S.heroTitle}>Operations overview</h1>
+            <h1 style={S.heroTitle}>Operations <span className="hl">overview</span></h1>
             <div style={S.heroSub}>
               Infrastructure health, alerting, and recurring reporting across the Pelindo workspace.
             </div>
@@ -244,10 +245,12 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             </div>
           </div>
         </section>
+        <span className="shard tr"/><span className="shard bl"/>
+        </div>
 
         {/* ── KPI GRID ── */}
         <div style={S.kpiRow}>
-          <button style={S.kpiCard} onClick={() => navigate("alert-monitor")}>
+          <button className="dash-kpi" style={S.kpiCard} onClick={() => navigate("alert-monitor")}>
             <div style={S.kpiTop}>
               <span style={{...S.kpiIcon, color:"var(--red)", background:"var(--red-dim)"}}>
                 <Icon name="bell" size={18}/>
@@ -261,7 +264,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             </div>
           </button>
 
-          <div style={{...S.kpiCard, cursor:"default"}}>
+          <div className="dash-kpi" style={{...S.kpiCard, cursor:"default"}}>
             <div style={S.kpiTop}>
               <span style={{...S.kpiIcon, color:"var(--green)", background:"var(--green-dim)"}}>
                 <Icon name="shield" size={18}/>
@@ -274,7 +277,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             </div>
           </div>
 
-          <button style={S.kpiCard} onClick={() => navigate("daily-task")}>
+          <button className="dash-kpi" style={S.kpiCard} onClick={() => navigate("daily-task")}>
             <div style={S.kpiTop}>
               <span style={{...S.kpiIcon, color:"var(--blue)", background:"var(--blue-dim)"}}>
                 <Icon name="report" size={18}/>
@@ -288,7 +291,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             </div>
           </button>
 
-          <button style={S.kpiCard} onClick={() => navigate("daily-task")}>
+          <button className="dash-kpi" style={S.kpiCard} onClick={() => navigate("daily-task")}>
             <div style={S.kpiTop}>
               <span style={{...S.kpiIcon, color:"var(--amber)", background:"var(--amber-dim)"}}>
                 <Icon name="ticket" size={18}/>
@@ -303,7 +306,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
 
         {/* ── BENTO: alerts + daily report ── */}
         <div style={S.bentoWide}>
-          <div style={S.card}>
+          <div className="glass-card" style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
                 <span style={{...S.cardIcon, color:"var(--red)"}}><Icon name="alert" size={15}/></span>
@@ -348,7 +351,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             )}
           </div>
 
-          <div style={S.card}>
+          <div className="glass-card" style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
                 <span style={{...S.cardIcon, color:"var(--blue)"}}><Icon name="report" size={15}/></span>
@@ -381,7 +384,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
 
         {/* ── BENTO: workspace + recent deliverables ── */}
         <div style={S.bentoWide}>
-          <div style={S.card}>
+          <div className="glass-card" style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
                 <span style={{...S.cardIcon, color:"var(--amber)"}}><Icon name="layers" size={15}/></span>
@@ -417,7 +420,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
             </div>
           </div>
 
-          <div style={S.card}>
+          <div className="glass-card" style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
                 <span style={{...S.cardIcon, color:"var(--red)"}}><Icon name="alert" size={15}/></span>
@@ -478,26 +481,28 @@ export default function Dashboard({ customers, navigate, currentUser }) {
 
 const S = {
   root:   {height:"100%", display:"flex", flexDirection:"column", overflow:"hidden",
-           background:"var(--bg)", fontFamily:"var(--font)", color:"var(--text)"},
-  content:{flex:1, overflowY:"auto", padding:"22px 26px 36px", minHeight:0},
+           background:"transparent", fontFamily:"var(--font)", color:"var(--text)"},
+  content:{flex:1, overflowY:"auto", padding:"22px 26px 36px", minHeight:0,
+           width:"100%", maxWidth:1440, margin:"0 auto"},
 
   hero:  {position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end",
           justifyContent:"space-between", gap:24, flexWrap:"wrap",
-          background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:14,
+          background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:20,
           padding:"26px 28px", marginBottom:16, boxShadow:"var(--shadow-card)"},
   heroGlow:{position:"absolute", inset:0, pointerEvents:"none",
-          background:"radial-gradient(620px 180px at 100% 0%, var(--accent-soft), transparent 72%)"},
+          background:"radial-gradient(620px 200px at 100% 0%, rgba(225,29,72,.22), rgba(232,194,122,.05) 45%, transparent 72%)"},
   heroLeft:{position:"relative", minWidth:0},
-  heroEyebrow:{fontSize:11.5, fontWeight:600, color:"var(--muted)", letterSpacing:".01em"},
-  heroTitle:{fontSize:26, fontWeight:700, letterSpacing:"-.035em", color:"var(--text)", marginTop:5, lineHeight:1.15},
+  heroEyebrow:{fontSize:11.5, fontWeight:600, color:"var(--rose)", letterSpacing:".04em", textTransform:"uppercase"},
+  heroTitle:{fontSize:30, fontWeight:750, letterSpacing:"-.04em", color:"var(--text)", marginTop:5, lineHeight:1.12},
   heroSub:{fontSize:12.5, color:"var(--muted)", marginTop:7, maxWidth:620, lineHeight:1.6},
   heroActions:{display:"flex", gap:9, marginTop:18, flexWrap:"wrap"},
   heroPrimary:{display:"inline-flex", alignItems:"center", gap:6, background:"var(--accent)", color:"#fff",
           border:"none", fontFamily:"inherit", fontSize:12, fontWeight:600, padding:"9px 16px",
-          borderRadius:7, cursor:"pointer"},
-  heroGhost:{display:"inline-flex", alignItems:"center", gap:6, background:"var(--surface2)",
+          borderRadius:10, cursor:"pointer"},
+  heroGhost:{display:"inline-flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.05)",
           border:"1px solid var(--border2)", color:"var(--text4)", fontFamily:"inherit",
-          fontSize:12, fontWeight:500, padding:"9px 16px", borderRadius:7, cursor:"pointer"},
+          fontSize:12, fontWeight:500, padding:"9px 16px", borderRadius:10, cursor:"pointer",
+          boxShadow:"var(--shadow-btn)"},
   heroRight:{position:"relative", textAlign:"right", minWidth:180},
   heroLive:{display:"inline-flex", alignItems:"center", gap:7, fontSize:11.5, fontWeight:600, color:"var(--green)"},
   heroClock:{fontSize:15, fontWeight:650, color:"var(--text2)", marginTop:8, fontFamily:"var(--mono)", letterSpacing:"-.01em"},
@@ -506,9 +511,9 @@ const S = {
 
   kpiRow:{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:14, marginBottom:16},
   kpiCard:{display:"flex", flexDirection:"column", gap:2, background:"var(--bg2)",
-          border:"1px solid var(--border)", borderRadius:12, padding:"16px 18px",
+          border:"1px solid var(--border)", borderRadius:16, padding:"16px 18px",
           cursor:"pointer", textAlign:"left", fontFamily:"inherit", color:"inherit",
-          boxShadow:"var(--shadow-card)", transition:"border-color .15s, box-shadow .15s"},
+          transition:"border-color .25s, box-shadow .25s"},
   kpiTop:{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12},
   kpiIcon:{width:36, height:36, borderRadius:9, display:"flex", alignItems:"center",
           justifyContent:"center", flexShrink:0},
@@ -519,7 +524,7 @@ const S = {
           overflow:"hidden", textOverflow:"ellipsis"},
 
   bentoWide:{display:"grid", gridTemplateColumns:"1.5fr 1fr", gap:16, marginBottom:16},
-  card:   {background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:12, padding:"18px 20px",
+  card:   {background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:16, padding:"18px 20px",
           boxShadow:"var(--shadow-card)", minWidth:0},
   cardHead:{display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:16},
   cardTitleRow:{display:"flex", alignItems:"center", gap:9, minWidth:0},

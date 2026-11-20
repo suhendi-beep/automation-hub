@@ -3,7 +3,7 @@ import PageShell, { btn, btnPrimary, btnDanger, input, label, card, ErrorBox } f
 import { clearSession } from "../api.js";
 import Icon from "../components/Icon.jsx";
 
-export default function SettingsPage({ darkMode, toggleDark, currentUser, currentRole, displayName }) {
+export default function SettingsPage({ currentUser, currentRole, displayName }) {
   const [config, setConfig] = useState(null);
   const [form, setForm] = useState({ current_password: "", new_password: "", confirm: "" });
   const [error, setError] = useState("");
@@ -74,11 +74,11 @@ export default function SettingsPage({ darkMode, toggleDark, currentUser, curren
           <div style={sectionTitle}>Appearance</div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>
-              Current theme: <strong style={{ color: "var(--text2)" }}>{darkMode ? "Dark" : "Light"}</strong>
+              Current theme: <strong style={{ color: "var(--gold)" }}>Midnight glass</strong>
             </div>
-            <button style={btn} onClick={toggleDark}>
-              <Icon name={darkMode ? "sun" : "moon"} size={12}/> Switch to {darkMode ? "light" : "dark"}
-            </button>
+            <span style={{ fontSize: 10.5, color: "var(--rose)", border: "1px solid var(--border3)", padding: "4px 10px", borderRadius: 99 }}>
+              Locked
+            </span>
           </div>
           <div style={{ borderTop: "1px solid var(--border)", marginTop: 14, paddingTop: 14 }}>
             <button style={btnDanger} onClick={signOut}><Icon name="logout" size={12}/> Sign out</button>
