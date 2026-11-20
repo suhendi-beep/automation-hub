@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import PageShell, { btn, card, badge, ErrorBox } from "../components/PageShell.jsx";
+import Icon from "../components/Icon.jsx";
 
 export default function GrafanaPage() {
   const [dashboards, setDashboards] = useState([]);
@@ -29,16 +30,17 @@ export default function GrafanaPage() {
 
   return (
     <PageShell
+      icon="grafana"
       title="Grafana Dashboards"
       subtitle={baseUrl ? `Source: ${baseUrl}` : "Connected Grafana instance"}
       actions={
         <>
           {baseUrl && (
             <a href={baseUrl} target="_blank" rel="noreferrer" style={{ ...btn, textDecoration: "none" }}>
-              Open Grafana
+              Open Grafana <Icon name="external" size={11}/>
             </a>
           )}
-          <button style={btn} onClick={load}>Refresh</button>
+          <button style={btn} onClick={load}><Icon name="refresh" size={12}/> Refresh</button>
         </>
       }
     >
@@ -50,7 +52,7 @@ export default function GrafanaPage() {
           <div style={{ fontSize: 10, color: "var(--muted2)" }}>Dashboards</div>
         </div>
         <div style={{ ...card, flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: alerts && alerts.length ? "#EF4444" : "#22C55E" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: alerts && alerts.length ? "var(--red)" : "var(--green)" }}>
             {alerts === null ? "—" : alerts.length}
           </div>
           <div style={{ fontSize: 10, color: "var(--muted2)" }}>Firing alerts</div>
@@ -73,11 +75,11 @@ export default function GrafanaPage() {
               rel="noreferrer"
               style={{ ...card, textDecoration: "none", color: "inherit" }}
             >
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>{d.title}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
-                <span style={badge("#3B82F6")}>{d.folder}</span>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{d.title}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                <span style={badge("var(--blue)", "var(--blue-dim)")}>{d.folder}</span>
                 {(d.tags || []).slice(0, 2).map((t) => (
-                  <span key={t} style={badge("#8B5CF6")}>{t}</span>
+                  <span key={t} style={badge("var(--muted)")}>{t}</span>
                 ))}
               </div>
             </a>

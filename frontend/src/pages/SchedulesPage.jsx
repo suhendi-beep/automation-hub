@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import PageShell, { btn, btnPrimary, card, badge, ErrorBox, fmtDate } from "../components/PageShell.jsx";
+import Icon from "../components/Icon.jsx";
 
 export default function SchedulesPage({ currentRole }) {
   const isAdmin = currentRole === "admin";
@@ -34,9 +35,10 @@ export default function SchedulesPage({ currentRole }) {
 
   return (
     <PageShell
+      icon="schedule"
       title="Schedules"
       subtitle="Automated reports executed by the Celery beat service"
-      actions={<button style={btn} onClick={load}>Refresh</button>}
+      actions={<button style={btn} onClick={load}><Icon name="refresh" size={12}/> Refresh</button>}
     >
       <ErrorBox message={error} />
 
@@ -51,8 +53,8 @@ export default function SchedulesPage({ currentRole }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text2)" }}>{s.label}</span>
-                    <span style={badge("#22C55E")}>active</span>
+                    <span style={{ fontSize: 13, fontWeight: 650, color: "var(--text)" }}>{s.label}</span>
+                    <span style={badge("var(--green)", "var(--green-dim)")}>active</span>
                   </div>
                   <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{s.description}</div>
                   <div style={{ fontSize: 11, color: "var(--text4)", marginTop: 8 }}>
@@ -60,16 +62,16 @@ export default function SchedulesPage({ currentRole }) {
                     <span style={{ margin: "0 10px", color: "var(--border2)" }}>|</span>
                     <strong style={{ color: "var(--muted2)" }}>Last run:</strong> {fmtDate(s.last_run)}
                   </div>
-                  <div style={{ fontFamily: "monospace", fontSize: 10, color: "var(--muted3)", marginTop: 6 }}>{s.task}</div>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--muted3)", marginTop: 6 }}>{s.task}</div>
                 </div>
                 {isAdmin && (
                   <button style={btnPrimary} onClick={() => runNow(s)} disabled={running[s.id]}>
-                    {running[s.id] ? "Queueing…" : "Run now"}
+                    <Icon name="play" size={11}/> {running[s.id] ? "Queueing…" : "Run now"}
                   </button>
                 )}
               </div>
               {messages[s.id] && (
-                <div style={{ fontSize: 11, color: "#86efac", marginTop: 10 }}>{messages[s.id]}</div>
+                <div style={{ fontSize: 11, color: "var(--green)", marginTop: 10 }}>{messages[s.id]}</div>
               )}
             </div>
           ))}

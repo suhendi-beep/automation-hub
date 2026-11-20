@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import PageShell, { btn, card, badge, ErrorBox } from "../components/PageShell.jsx";
-
-const PLATFORM_COLORS = { OCI: "#F97316", AWS: "#F59E0B", Huawei: "#EF4444" };
+import Icon from "../components/Icon.jsx";
 
 export default function CustomersPage({ navigate }) {
   const [customers, setCustomers] = useState([]);
@@ -21,9 +20,10 @@ export default function CustomersPage({ navigate }) {
 
   return (
     <PageShell
+      icon="users"
       title="Customers"
       subtitle="Registered customer environments and their automations"
-      actions={<button style={btn} onClick={load}>Refresh</button>}
+      actions={<button style={btn} onClick={load}><Icon name="refresh" size={12}/> Refresh</button>}
     >
       <ErrorBox message={error} />
       {loading ? (
@@ -39,12 +39,12 @@ export default function CustomersPage({ navigate }) {
               key={c.id}
               style={{ ...card, cursor: "pointer", transition: "border-color .15s" }}
               onClick={() => navigate("customer", c.id)}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#B11226"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border3)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text2)" }}>{c.name}</div>
-                <span style={badge(PLATFORM_COLORS[c.platform] || "#3B82F6")}>{c.platform}</span>
+                <div style={{ fontSize: 14, fontWeight: 650, color: "var(--text)" }}>{c.name}</div>
+                <span style={badge("var(--blue)", "var(--blue-dim)")}>{c.platform}</span>
               </div>
               <div style={{ display: "flex", gap: 16, marginTop: 14 }}>
                 <div>
@@ -52,14 +52,14 @@ export default function CustomersPage({ navigate }) {
                   <div style={{ fontSize: 10, color: "var(--muted2)" }}>Automations</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: c.status === "active" ? "#22C55E" : "var(--muted)" }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: c.status === "active" ? "var(--green)" : "var(--muted)" }}>
                     {c.status}
                   </div>
                   <div style={{ fontSize: 10, color: "var(--muted2)" }}>Status</div>
                 </div>
               </div>
-              <div style={{ marginTop: 14, fontSize: 11, color: "#B11226", fontWeight: 600 }}>
-                Open automations →
+              <div style={{ marginTop: 14, fontSize: 11, color: "var(--accent)", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
+                Open automations <Icon name="arrowRight" size={11}/>
               </div>
             </div>
           ))}

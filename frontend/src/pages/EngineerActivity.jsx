@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
+import Icon from "../components/Icon.jsx";
+import PageHeader from "../components/PageHeader.jsx";
 
 /* ── CSV Export helpers ── */
 function buildKpiRows(engineers, logs) {
@@ -24,7 +26,7 @@ function downloadSingleCsv(u, logs, filterFrom, filterTo) {
   const headers = ["No","Timestamp","Engineer","Username","Category","Action","Detail"];
   const body    = ul.map((l, i) => [
     i + 1,
-    l.ts ? new Date(l.ts).toLocaleString("id-ID", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "-",
+    l.ts ? new Date(l.ts).toLocaleString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "-",
     l.display || l.username,
     l.username,
     (l.category || "").toUpperCase(),
@@ -47,7 +49,7 @@ function downloadAllCsv(engineers, logs, filterFrom, filterTo) {
   const headers = ["No","Timestamp","Engineer","Username","Category","Action","Detail"];
   const body    = sorted.map((l, i) => [
     i + 1,
-    l.ts ? new Date(l.ts).toLocaleString("id-ID", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "-",
+    l.ts ? new Date(l.ts).toLocaleString("en-GB", { day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit" }) : "-",
     l.display || l.username,
     l.username,
     (l.category || "").toUpperCase(),
@@ -64,11 +66,18 @@ function downloadAllCsv(engineers, logs, filterFrom, filterTo) {
 }
 
 const CATEGORY_COLOR = {
-  report:  "#B11226",
-  alert:   "#EF4444",
-  task:    "#3B82F6",
-  auth:    "#22C55E",
-  general: "#6B7280",
+  report:  "var(--accent)",
+  alert:   "var(--red)",
+  task:    "var(--blue)",
+  auth:    "var(--green)",
+  general: "var(--muted)",
+};
+const CATEGORY_BG = {
+  report:  "var(--accent-soft)",
+  alert:   "var(--red-dim)",
+  task:    "var(--blue-dim)",
+  auth:    "var(--green-dim)",
+  general: "var(--surface2)",
 };
 const CATEGORY_LABEL = {
   report:  "Report",
@@ -81,7 +90,7 @@ const CATEGORY_LABEL = {
 function fmtTs(ts) {
   if (!ts) return "-";
   try {
-    return new Date(ts).toLocaleString("id-ID", {
+    return new Date(ts).toLocaleString("en-GB", {
       day: "2-digit", month: "short", year: "numeric",
       hour: "2-digit", minute: "2-digit",
     });
@@ -89,18 +98,19 @@ function fmtTs(ts) {
 }
 
 /* ── KPI Card ── */
-function KpiCard({ icon, label, value, sub, color, bg, bd }) {
+function KpiCard({ icon, label, value, sub, color, bg }) {
   return (
     <div style={{
-      background: "var(--bg2)", border: `1px solid ${bd}`,
+      background: "var(--bg2)", border: "1px solid var(--border)",
       borderRadius: 10, padding: "14px 16px", flex: 1, minWidth: 0,
     }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
         <div style={{
-          width: 40, height: 40, borderRadius: 9, background: bg,
+          width: 38, height: 38, borderRadius: 9, background: bg,
+          color,
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 18, flexShrink: 0,
-        }}>{icon}</div>
+          flexShrink: 0,
+        }}><Icon name={icon} size={17}/></div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 26, fontWeight: 700, color: "var(--text)", letterSpacing: "-.03em", lineHeight: 1 }}>
             {value}
@@ -109,8 +119,8 @@ function KpiCard({ icon, label, value, sub, color, bg, bd }) {
           {sub && <div style={{ fontSize: 10, color: "var(--muted2)", marginTop: 2 }}>{sub}</div>}
         </div>
       </div>
-      <div style={{ marginTop: 8, height: 3, borderRadius: 2, background: `${color}22` }}>
-        <div style={{ height: "100%", width: "100%", borderRadius: 2, background: color, opacity: .5 }}/>
+      <div style={{ marginTop: 8, height: 3, borderRadius: 2, background: "var(--surface3)" }}>
+        <div style={{ height: "100%", width: "100%", borderRadius: 2, background: color, opacity: .45 }}/>
       </div>
     </div>
   );
@@ -131,13 +141,13 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
       <td style={tdS}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <div style={{
-            width: 30, height: 30, borderRadius: "50%", background: "#B11226",
+            width: 30, height: 30, borderRadius: "50%", background: "var(--accent)",
             color: "#fff", fontSize: 11, fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
           }}>{initials}</div>
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text3)" }}>{u.display}</div>
-            <div style={{ fontSize: 9, color: "var(--muted)", fontFamily: "monospace" }}>{u.username}</div>
+            <div style={{ fontSize: 9, color: "var(--muted)", fontFamily: "var(--mono)" }}>{u.username}</div>
           </div>
         </div>
       </td>
@@ -145,28 +155,28 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
         <span style={{ fontSize: 18, fontWeight: 700, color: "var(--text)" }}>{total}</span>
       </td>
       <td style={{ ...tdS, textAlign: "center" }}>
-        <span style={badge("#B11226")}>{rep}</span>
+        <span style={badge(CATEGORY_COLOR.report, CATEGORY_BG.report)}>{rep}</span>
       </td>
       <td style={{ ...tdS, textAlign: "center" }}>
-        <span style={badge("#EF4444")}>{alert}</span>
+        <span style={badge(CATEGORY_COLOR.alert, CATEGORY_BG.alert)}>{alert}</span>
       </td>
       <td style={{ ...tdS, textAlign: "center" }}>
-        <span style={badge("#3B82F6")}>{taskC}</span>
+        <span style={badge(CATEGORY_COLOR.task, CATEGORY_BG.task)}>{taskC}</span>
       </td>
       <td style={{ ...tdS, textAlign: "center" }}>
-        <span style={badge("#22C55E")}>{taskD}</span>
+        <span style={badge(CATEGORY_COLOR.auth, CATEGORY_BG.auth)}>{taskD}</span>
       </td>
       <td style={{ ...tdS }}>
         <button
           onClick={() => downloadSingleCsv(u, logs, filterFrom, filterTo)}
           title={`Download KPI CSV for ${u.display}`}
           style={{
-            background: "rgba(177,18,38,.1)", border: "1px solid rgba(177,18,38,.3)",
-            borderRadius: 5, color: "#B11226", fontFamily: "inherit",
+            background: "var(--bg2)", border: "1px solid var(--border2)",
+            borderRadius: 5, color: "var(--text4)", fontFamily: "inherit",
             fontSize: 10, fontWeight: 600, padding: "4px 10px", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap",
+            display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap",
           }}>
-          ⬇ CSV
+          <Icon name="download" size={10}/> CSV
         </button>
       </td>
     </tr>
@@ -234,21 +244,20 @@ export default function EngineerActivity({ navigate }) {
       <div style={{
         flex: 1, display: "flex", flexDirection: "column",
         alignItems: "center", justifyContent: "center",
-        background: "var(--bg)", fontFamily: "'Inter',system-ui,sans-serif",
+        background: "var(--bg)", fontFamily: "var(--font)",
         gap: 16, padding: 40, textAlign: "center",
       }}>
-        <div style={{ fontSize: 48, opacity: .3 }}>🔒</div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text2)" }}>Access Restricted</div>
+        <div style={{ color: "var(--border3)" }}><Icon name="lock" size={40}/></div>
+        <div style={{ fontSize: 18, fontWeight: 650, color: "var(--text)" }}>Access restricted</div>
         <div style={{ fontSize: 13, color: "var(--muted)", maxWidth: 380, lineHeight: 1.7 }}>
           You do not have permission to view Engineer Activity logs.
           This feature is only accessible by administrators.
           Please contact your admin to request access.
         </div>
-        <button onClick={() => navigate("dashboard")} style={{
-          marginTop: 8, background: "#B11226", color: "#fff", border: "none",
-          fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-          padding: "9px 22px", borderRadius: 7, cursor: "pointer",
-        }}>← Back to Dashboard</button>
+        <button onClick={() => navigate("dashboard")} className="btn-primary"
+          style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <Icon name="arrowLeft" size={12}/> Back to dashboard
+        </button>
       </div>
     );
   }
@@ -256,27 +265,23 @@ export default function EngineerActivity({ navigate }) {
   return (
     <div style={{
       height: "100%", display: "flex", flexDirection: "column",
-      background: "var(--bg)", fontFamily: "'Inter',system-ui,sans-serif", overflow: "hidden",
+      background: "var(--bg)", fontFamily: "var(--font)", overflow: "hidden",
     }}>
 
       {/* ── Header ── */}
-      <div style={{
-        padding: "14px 24px 12px", borderBottom: "1px solid var(--border)",
-        background: "var(--bg2)", flexShrink: 0,
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-      }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text2)" }}>Engineer Activity</div>
-          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-            Monitor engineer performance — reports, alerts, tasks
-          </div>
-        </div>
-        <button onClick={loadLogs} style={{
-          background: "var(--surface2)", border: "1px solid var(--border2)",
-          borderRadius: 6, color: "var(--muted)", fontSize: 11,
-          padding: "5px 14px", cursor: "pointer", fontFamily: "inherit",
-        }}>↻ Refresh</button>
-      </div>
+      <PageHeader
+        icon="activity"
+        title="Engineer activity"
+        subtitle="Monitor engineer performance — reports, alerts, tasks"
+        actions={
+          <button onClick={loadLogs} style={{
+            background: "var(--bg2)", border: "1px solid var(--border2)",
+            borderRadius: 6, color: "var(--text4)", fontSize: 11,
+            padding: "6px 12px", cursor: "pointer", fontFamily: "inherit",
+            display: "inline-flex", alignItems: "center", gap: 6,
+          }}><Icon name="refresh" size={11}/> Refresh</button>
+        }
+      />
 
       {/* ── Filters ── */}
       <div style={{
@@ -298,14 +303,15 @@ export default function EngineerActivity({ navigate }) {
         </div>
         {/* Tab switch */}
         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-          {[["kpi","📊 KPI"],["log","📋 Activity Log"]].map(([t,l]) => (
+          {[["kpi","activity","KPI"],["log","logs","Activity log"]].map(([t,ic,l]) => (
             <button key={t} onClick={() => setTab(t)} style={{
-              background: tab===t ? "#B11226" : "var(--surface2)",
-              border: `1px solid ${tab===t ? "#B11226" : "var(--border2)"}`,
+              background: tab===t ? "var(--accent)" : "var(--bg2)",
+              border: `1px solid ${tab===t ? "var(--accent)" : "var(--border2)"}`,
               color: tab===t ? "#fff" : "var(--muted)",
               fontFamily: "inherit", fontSize: 11, fontWeight: 600,
-              padding: "5px 14px", borderRadius: 6, cursor: "pointer",
-            }}>{l}</button>
+              padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}><Icon name={ic} size={11}/> {l}</button>
           ))}
         </div>
       </div>
@@ -318,13 +324,13 @@ export default function EngineerActivity({ navigate }) {
 
             {/* ── Global KPI Cards ── */}
             <div>
-              <div style={secLbl}>OVERVIEW — {filterFrom} s/d {filterTo}</div>
+              <div style={secLbl}>OVERVIEW — {filterFrom} to {filterTo}</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
-                <KpiCard icon="⚡" label="Total Activities"    value={totalActivities} color="#6B7280" bg="rgba(107,114,128,.1)"  bd="rgba(107,114,128,.2)"/>
-                <KpiCard icon="📄" label="Reports Generated"   value={totalReports}    color="#B11226" bg="rgba(177,18,38,.1)"    bd="rgba(177,18,38,.2)"/>
-                <KpiCard icon="📣" label="Alerts Escalated"    value={totalAlerts}     color="#EF4444" bg="rgba(239,68,68,.1)"    bd="rgba(239,68,68,.2)"/>
-                <KpiCard icon="✏️" label="Tasks Created"       value={totalTaskCreate} color="#3B82F6" bg="rgba(59,130,246,.1)"   bd="rgba(59,130,246,.2)"/>
-                <KpiCard icon="✅" label="Tasks Closed"        value={totalTaskClose}  color="#22C55E" bg="rgba(34,197,94,.1)"    bd="rgba(34,197,94,.2)"/>
+                <KpiCard icon="activity" label="Total activities"   value={totalActivities} color="var(--muted)"  bg="var(--surface2)"/>
+                <KpiCard icon="report"   label="Reports generated"  value={totalReports}    color="var(--accent)" bg="var(--accent-soft)"/>
+                <KpiCard icon="alert"    label="Alerts escalated"   value={totalAlerts}     color="var(--red)"    bg="var(--red-dim)"/>
+                <KpiCard icon="edit"     label="Tasks created"      value={totalTaskCreate} color="var(--blue)"   bg="var(--blue-dim)"/>
+                <KpiCard icon="checkCircle" label="Tasks closed"    value={totalTaskClose}  color="var(--green)"  bg="var(--green-dim)"/>
               </div>
             </div>
 
@@ -333,13 +339,9 @@ export default function EngineerActivity({ navigate }) {
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
                 <div style={secLbl}>PER ENGINEER</div>
                 <button onClick={() => downloadAllCsv(engineers, filtered, filterFrom, filterTo)}
-                  style={{
-                    background:"#B11226", color:"#fff", border:"none",
-                    fontFamily:"inherit", fontSize:11, fontWeight:600,
-                    padding:"5px 14px", borderRadius:6, cursor:"pointer",
-                    display:"flex", alignItems:"center", gap:5,
-                  }}>
-                  ⬇ Export All CSV
+                  className="btn-primary"
+                  style={{ display:"inline-flex", alignItems:"center", gap:5 }}>
+                  <Icon name="download" size={11}/> Export all CSV
                 </button>
               </div>
               <div style={{
@@ -383,7 +385,7 @@ export default function EngineerActivity({ navigate }) {
                   const color  = CATEGORY_COLOR[k];
                   return (
                     <div key={k} style={{
-                      flex: 1, background: "var(--bg2)", border: `1px solid ${color}33`,
+                      flex: 1, background: "var(--bg2)", border: "1px solid var(--border)",
                       borderRadius: 9, padding: "14px 16px",
                     }}>
                       <div style={{ fontSize: 22, fontWeight: 700, color }}>{cnt}</div>
@@ -411,8 +413,8 @@ export default function EngineerActivity({ navigate }) {
             }}>
               {[["","All"],["report","Report"],["alert","Alert"],["task","Task"],["auth","Auth"]].map(([k,l]) => (
                 <button key={k} onClick={() => setFilterCat(k)} style={{
-                  background: filterCat===k ? CATEGORY_COLOR[k]||"#B11226" : "var(--surface2)",
-                  border: `1px solid ${filterCat===k ? (CATEGORY_COLOR[k]||"#B11226") : "var(--border2)"}`,
+                  background: filterCat===k ? "var(--accent)" : "var(--bg2)",
+                  border: `1px solid ${filterCat===k ? "var(--accent)" : "var(--border2)"}`,
                   color: filterCat===k ? "#fff" : "var(--muted)",
                   fontFamily: "inherit", fontSize: 10, fontWeight: 600,
                   padding: "4px 12px", borderRadius: 5, cursor: "pointer",
@@ -430,7 +432,7 @@ export default function EngineerActivity({ navigate }) {
               </div>
             ) : filtered.length === 0 ? (
               <div style={cMsg}>
-                <div style={{ fontSize:32,opacity:.15,marginBottom:8 }}>📋</div>
+                <div style={{ color:"var(--border3)",marginBottom:10 }}><Icon name="logs" size={28}/></div>
                 No activity found for the selected period.
               </div>
             ) : (
@@ -444,23 +446,24 @@ export default function EngineerActivity({ navigate }) {
                 </thead>
                 <tbody>
                   {filtered.map((l, i) => {
-                    const cc = CATEGORY_COLOR[l.category] || "#6B7280";
+                    const cc = CATEGORY_COLOR[l.category] || "var(--muted)";
+                    const cbg = CATEGORY_BG[l.category] || "var(--surface2)";
                     return (
                       <tr key={l.id||i} style={{
                         borderBottom: "1px solid var(--border)",
                         background: i%2===0 ? "transparent" : "var(--row-alt)",
                       }}>
-                        <td style={{ ...tdS, fontFamily:"monospace", fontSize:10, color:"var(--muted)", whiteSpace:"nowrap" }}>
+                        <td style={{ ...tdS, fontFamily:"var(--mono)", fontSize:10, color:"var(--muted)", whiteSpace:"nowrap" }}>
                           {fmtTs(l.ts)}
                         </td>
                         <td style={tdS}>
                           <div style={{ fontSize:11,fontWeight:600,color:"var(--text3)" }}>{l.display||l.username}</div>
-                          <div style={{ fontSize:9,color:"var(--muted)",fontFamily:"monospace" }}>{l.username}</div>
+                          <div style={{ fontSize:9,color:"var(--muted)",fontFamily:"var(--mono)" }}>{l.username}</div>
                         </td>
                         <td style={tdS}>
                           <span style={{
                             fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,
-                            textTransform:"uppercase",background:cc+"22",color:cc,border:`1px solid ${cc}44`,
+                            textTransform:"uppercase",background:cbg,color:cc,border:"1px solid var(--border)",
                           }}>
                             {CATEGORY_LABEL[l.category]||l.category}
                           </span>
@@ -506,10 +509,10 @@ const cMsg = {
   justifyContent:"center",padding:"60px 0",
   fontSize:12,color:"var(--muted)",fontStyle:"italic",textAlign:"center",
 };
-function badge(color) {
+function badge(color, bg) {
   return {
     display:"inline-block",fontSize:13,fontWeight:700,
-    color,background:color+"18",border:`1px solid ${color}44`,
+    color,background:bg||"var(--surface2)",border:"1px solid var(--border)",
     padding:"2px 10px",borderRadius:6,minWidth:30,textAlign:"center",
   };
 }

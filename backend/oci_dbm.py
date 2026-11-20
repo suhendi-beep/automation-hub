@@ -19,6 +19,7 @@ PROFILE = "PELINDO-SIN"
 CACHE_TTL = 600
 
 OCID_RE = re.compile(r"^ocid1\.database\.oc1\.([a-z0-9-]+)\.[a-z0-9]+$")
+DBSYSTEM_OCID_RE = re.compile(r"^ocid1\.dbsystem\.oc1\.([a-z0-9-]+)\.[a-z0-9]+$")
 SQL_ID_RE = re.compile(r"^[0-9a-z]{13}$")
 AWR_DB_ID_RE = re.compile(r"^\d+$")
 
@@ -42,9 +43,10 @@ class OciError(Exception):
 
 
 def derive_region(ocid):
-    m = OCID_RE.match(ocid or "")
+    m = OCID_RE.match(ocid or "") or DBSYSTEM_OCID_RE.match(ocid or "")
     if not m:
-        raise OciError("invalid_ocid", "OCID database tidak valid.", 400)
+        raise OciError(
+            "invalid_ocid", "OCID database/DB System tidak valid.", 400)
     return m.group(1)
 
 
@@ -95,6 +97,92 @@ def _run_oci(region, args, timeout=60):
         return json.loads(p.stdout or "{}")
     except Exception:
         raise OciError("parse_error", "Respons OCI tidak bisa dibaca.", 502)
+
+
+_RESOLVE_CACHE = {}
+_RESOLVE_LOCK = threading.Lock()
+
+
+def resolve_database_ocid(dbsystem_ocid, region):
+    """Map a DB System OCID to its database OCID for Top SQL/AWR.
+
+    Alerts such as ASMDiskGroup only carry a DB System OCID. DBM APIs need the
+    database OCID, so read the DB System compartment and list its databases.
+    Some tenancies deny both calls; return a clear code instead of pretending
+    the alert is a Kubernetes/node alert.
+    """
+    if not DBSYSTEM_OCID_RE.match(dbsystem_ocid or ""):
+        raise OciError(
+            "invalid_ocid", "OCID DB System tidak valid.", 400)
+
+    with _RESOLVE_LOCK:
+        hit = _RESOLVE_CACHE.get(dbsystem_ocid)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+
+    try:
+        system = _run_oci(region, [
+            "db", "system", "get",
+            "--db-system-id", dbsystem_ocid,
+            "--output", "json",
+        ], timeout=45)
+    except OciError as e:
+        if e.code in ("not_managed", "cli_auth"):
+            raise OciError(
+                "db_system_no_access",
+                "OCI CLI tidak punya izin membaca DB System ini. "
+                "Top SQL/AWR membutuhkan OCID database; minta tim DBA "
+                "membuka akses atau cek grafik ASM di Grafana.",
+                403,
+            )
+        raise
+
+    system_data = system.get("data") or {}
+    compartment_id = system_data.get("compartment-id")
+    if not compartment_id:
+        raise OciError(
+            "db_system_no_access",
+            "Compartment DB System tidak terbaca dari OCI CLI.",
+            403,
+        )
+
+    try:
+        listed = _run_oci(region, [
+            "db", "database", "list",
+            "--compartment-id", compartment_id,
+            "--db-system-id", dbsystem_ocid,
+            "--output", "json",
+        ], timeout=45)
+    except OciError as e:
+        if e.code in ("not_managed", "cli_auth"):
+            raise OciError(
+                "db_system_no_access",
+                "OCI CLI tidak punya izin membaca database di DB System ini. "
+                "Minta tim DBA membuka akses atau cek grafik ASM di Grafana.",
+                403,
+            )
+        raise
+
+    items = listed.get("data") or []
+    available = [
+        item for item in items
+        if str(item.get("lifecycle-state") or "").upper() == "AVAILABLE"
+    ]
+    candidates = available or items
+    if not candidates:
+        raise OciError(
+            "db_system_no_database",
+            "Tidak ada database yang bisa dibaca di DB System ini.",
+            409,
+        )
+    db_ocid = candidates[0].get("id")
+    if not OCID_RE.match(db_ocid or ""):
+        raise OciError(
+            "parse_error", "OCID database hasil resolusi DB System tidak valid.", 502)
+
+    with _RESOLVE_LOCK:
+        _RESOLVE_CACHE[dbsystem_ocid] = (time.time(), db_ocid)
+    return db_ocid
 
 
 def list_awr_dbs(ocid, region):
@@ -316,11 +404,16 @@ _CACHE_LOCK = threading.Lock()
 
 
 def get_top_sql(ocid, limit=5, refresh=False):
-    region = derive_region(ocid)
+    source_ocid = ocid
+    region = derive_region(source_ocid)
+    resolved_from = None
+    if DBSYSTEM_OCID_RE.match(source_ocid):
+        ocid = resolve_database_ocid(source_ocid, region)
+        resolved_from = "dbsystem"
 
     if not refresh:
         with _CACHE_LOCK:
-            hit = _CACHE.get(ocid)
+            hit = _CACHE.get(source_ocid)
         if hit and time.time() - hit[0] < CACHE_TTL:
             payload = dict(hit[1])
             payload["cached"] = True
@@ -373,6 +466,8 @@ def get_top_sql(ocid, limit=5, refresh=False):
     payload = {
         "ok": True,
         "ocid": ocid,
+        "source_ocid": source_ocid,
+        "resolved_from": resolved_from,
         "region": region,
         "db_name": item.get("db-name"),
         "db_unique_name": item.get("db-unique-name") or item.get("db-name"),
@@ -388,5 +483,5 @@ def get_top_sql(ocid, limit=5, refresh=False):
         "cached": False,
     }
     with _CACHE_LOCK:
-        _CACHE[ocid] = (time.time(), payload)
+        _CACHE[source_ocid] = (time.time(), payload)
     return payload

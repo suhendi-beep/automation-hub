@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import PageShell, {
   btn, btnPrimary, btnDanger, input, label, card, table, th, td, badge, ErrorBox, fmtDate,
 } from "../components/PageShell.jsx";
+import Icon from "../components/Icon.jsx";
 
 const EMPTY = { name: "", platform: "OCI", tenancy: "", region: "", notes: "" };
 
@@ -67,12 +68,13 @@ export default function AccountsPage({ currentRole }) {
 
   return (
     <PageShell
+      icon="accounts"
       title="Accounts"
       subtitle="Cloud accounts used by automations (tenancy / account IDs)"
       actions={
         <>
-          <button style={btn} onClick={load}>Refresh</button>
-          {isAdmin && <button style={btnPrimary} onClick={openAdd}>+ Add account</button>}
+          <button style={btn} onClick={load}><Icon name="refresh" size={12}/> Refresh</button>
+          {isAdmin && <button style={btnPrimary} onClick={openAdd}><Icon name="plus" size={12}/> Add account</button>}
         </>
       }
     >
@@ -101,14 +103,14 @@ export default function AccountsPage({ currentRole }) {
               {accounts.map((a) => (
                 <tr key={a.id}>
                   <td style={{ ...td, color: "var(--text2)", fontWeight: 600 }}>{a.name}</td>
-                  <td style={td}><span style={badge("#3B82F6")}>{a.platform}</span></td>
-                  <td style={{ ...td, fontFamily: "monospace", fontSize: 11 }}>{a.tenancy || "—"}</td>
+                  <td style={td}><span style={badge("var(--blue)", "var(--blue-dim)")}>{a.platform}</span></td>
+                  <td style={{ ...td, fontFamily: "var(--mono)", fontSize: 11 }}>{a.tenancy || "—"}</td>
                   <td style={td}>{a.region || "—"}</td>
                   <td style={td}>{fmtDate(a.createdAt)}</td>
                   {isAdmin && (
                     <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button style={{ ...btn, marginRight: 6 }} onClick={() => openEdit(a)}>Edit</button>
-                      <button style={btnDanger} onClick={() => remove(a)}>Delete</button>
+                      <button style={{ ...btn, marginRight: 6 }} onClick={() => openEdit(a)}><Icon name="edit" size={11}/> Edit</button>
+                      <button style={btnDanger} onClick={() => remove(a)}><Icon name="trash" size={11}/> Delete</button>
                     </td>
                   )}
                 </tr>
@@ -122,8 +124,10 @@ export default function AccountsPage({ currentRole }) {
         <div className="modal-overlay" onClick={() => setModal(null)}>
           <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <span>{modal.id ? "Edit account" : "Add account"}</span>
-              <button className="modal-close" onClick={() => setModal(null)}>✕</button>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Icon name="accounts" size={14}/> {modal.id ? "Edit account" : "Add account"}
+              </span>
+              <button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" size={14}/></button>
             </div>
             <div className="modal-body">
               <div>
@@ -151,7 +155,7 @@ export default function AccountsPage({ currentRole }) {
                 <textarea style={{ ...input, height: 64, resize: "vertical" }} {...field("notes")} />
               </div>
               <button style={{ ...btnPrimary, width: "100%" }} onClick={save} disabled={saving || !modal.form.name.trim()}>
-                {saving ? "Saving…" : "Save account"}
+                <Icon name="check" size={12}/> {saving ? "Saving…" : "Save account"}
               </button>
             </div>
           </div>

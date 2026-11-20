@@ -1,10 +1,11 @@
 ﻿import React, { useState, useEffect, useRef } from "react";
-
+import Icon from "../components/Icon.jsx";
+import PageHeader from "../components/PageHeader.jsx";
 import { logActivity } from "../activityLog.js";
 
 /* â”€â”€ WIB time helper â”€â”€ */
 function timeNowWIB() {
-  return new Intl.DateTimeFormat("id-ID", {
+  return new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Jakarta",
     hour:     "2-digit",
     minute:   "2-digit",
@@ -221,11 +222,11 @@ export default function GenerateReport({ customers, navigate }) {
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({ status: "Cancelled", end: timeNowWIB() }),
         }).catch(() => {});
-        setResultMsg(d.error || "Automation gagal dijalankan.");
+        setResultMsg(d.error || "Failed to start the automation.");
         setStep("error");
       }
     } catch(e) {
-      setResultMsg(e.message || "Automation gagal dijalankan.");
+      setResultMsg(e.message || "Failed to start the automation.");
       setStep("error");
     }
   };
@@ -237,10 +238,10 @@ export default function GenerateReport({ customers, navigate }) {
   };
 
   const logColor = (l) => {
-    if (/error|fail|FAIL/i.test(l))             return "#F87171";
-    if (/done|success|DONE|berhasil/i.test(l))  return "#4ADE80";
-    if (/warn/i.test(l))                         return "#FBBF24";
-    if (/===\s*START|CHECKING|opening/i.test(l)) return "#60A5FA";
+    if (/error|fail|FAIL/i.test(l))             return "var(--red)";
+    if (/done|success|DONE|berhasil/i.test(l))  return "var(--green)";
+    if (/warn/i.test(l))                         return "var(--amber)";
+    if (/===\s*START|CHECKING|opening/i.test(l)) return "var(--blue)";
     return "var(--muted)";
   };
 
@@ -248,17 +249,18 @@ export default function GenerateReport({ customers, navigate }) {
     <div style={G.root}>
 
       {/* ── TOPBAR ── */}
-      <div style={G.topbar}>
-        <div>
-          <h1 style={G.title}>Generate Report</h1>
-          <p style={G.sub}>Select customer, report type and parameters to generate</p>
-        </div>
-        <div style={{display:"flex",gap:8}}>
-          {selCust&&selAuto&&(
-            <button style={G.refreshBtn} onClick={()=>loadLog(selCust,selAuto)}>↻ Refresh</button>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        icon="report"
+        title="Generate Report"
+        subtitle="Select customer, report type and parameters to generate"
+        actions={
+          selCust&&selAuto ? (
+            <button style={G.refreshBtn} onClick={()=>loadLog(selCust,selAuto)}>
+              <Icon name="refresh" size={11}/> Refresh
+            </button>
+          ) : null
+        }
+      />
 
       {/* ── MAIN 2-COLUMN LAYOUT ── */}
       <div style={G.layout}>
@@ -305,8 +307,8 @@ export default function GenerateReport({ customers, navigate }) {
           {/* Auto info box */}
           {auto && (
             <div style={G.infoBox}>
-              <div style={{fontSize:9,color:"#363636",textTransform:"uppercase",
-                letterSpacing:".08em",marginBottom:6}}>AUTOMATION INFO</div>
+              <div style={{fontSize:9,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",
+                letterSpacing:".08em",marginBottom:6}}>Automation info</div>
               <div style={{fontSize:11,color:"var(--muted)",lineHeight:1.6,marginBottom:8}}>{auto.description}</div>
               <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
                 {[auto.schedule, auto.output_type.toUpperCase(), auto.id].map(t=>(
@@ -318,15 +320,17 @@ export default function GenerateReport({ customers, navigate }) {
 
           {/* Status indicator */}
           {step!=="idle" && (
-            <div style={{padding:"8px 12px",borderRadius:7,fontSize:11,
-              background:step==="done"?"rgba(34,197,94,.08)":step==="error"?"rgba(239,68,68,.08)":"rgba(177,18,38,.08)",
-              border:`1px solid ${step==="done"?"rgba(34,197,94,.2)":step==="error"?"rgba(239,68,68,.2)":"rgba(177,18,38,.2)"}`,
-              color:step==="done"?"#4ADE80":step==="error"?"#F87171":"var(--text2)",
+            <div style={{padding:"9px 12px",borderRadius:7,fontSize:11,
+              background:step==="done"?"var(--green-dim)":step==="error"?"var(--red-dim)":"var(--accent-soft)",
+              border:"1px solid var(--border2)",
+              color:step==="done"?"var(--green)":step==="error"?"var(--red)":"var(--text2)",
               display:"flex",alignItems:"center",gap:8}}>
               {step==="running"&&<span className="spinner" style={{width:10,height:10,borderWidth:1.5,borderColor:"currentColor",borderTopColor:"transparent"}}/>}
-              {step==="done"?"✅ Report generated successfully!":
-               step==="error"?(resultMsg ? `❌ ${resultMsg}` : "❌ Generation failed — check log"):
-               "⏳ Generating report..."}
+              {step==="done"&&<Icon name="checkCircle" size={13}/>}
+              {step==="error"&&<Icon name="xCircle" size={13}/>}
+              {step==="done"?"Report generated successfully.":
+               step==="error"?(resultMsg || "Generation failed — check the log."):
+               "Generating report…"}
             </div>
           )}
 
@@ -337,12 +341,12 @@ export default function GenerateReport({ customers, navigate }) {
             onClick={handleGenerate}>
             {step==="running"
               ? <><span className="spinner" style={{width:12,height:12,borderWidth:2,borderColor:"#fff",borderTopColor:"transparent"}}/> Generating…</>
-              : "⚡ Generate Report"}
+              : <><Icon name="play" size={12}/> Generate report</>}
           </button>
 
           {(step==="done"||step==="error") && (
             <button style={G.resetBtn} onClick={()=>{ setStep("idle"); setTaskId(null); setOtpSubmitted(false); }}>
-              ← New Report
+              New report
             </button>
           )}
         </div>
@@ -352,24 +356,30 @@ export default function GenerateReport({ customers, navigate }) {
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
             marginBottom:12,flexShrink:0}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <div style={{fontSize:9,fontWeight:700,letterSpacing:".12em",color:"#363636",
+              <div style={{fontSize:9,fontWeight:700,letterSpacing:".12em",color:"var(--muted2)",
                 textTransform:"uppercase"}}>
-                {step==="running" ? "LIVE LOG" : logLines.length>0 ? "LOG HISTORY" : "LIVE LOG"}
+                {step==="running" ? "Live log" : logLines.length>0 ? "Log history" : "Live log"}
               </div>
               {step==="running" && (
-                <span style={{fontSize:8,fontWeight:700,padding:"2px 6px",borderRadius:3,
-                  background:"rgba(177,18,38,.15)",color:"#B11226",letterSpacing:".08em",
-                  border:"1px solid rgba(177,18,38,.3)"}}>● LIVE</span>
+                <span style={{fontSize:8,fontWeight:700,padding:"2px 7px",borderRadius:3,
+                  background:"var(--accent-soft)",color:"var(--accent)",letterSpacing:".08em",
+                  border:"1px solid var(--border2)",display:"inline-flex",alignItems:"center",gap:4}}>
+                  <span style={{width:5,height:5,borderRadius:"50%",background:"var(--accent)",
+                    animation:"pulse 1.2s ease-in-out infinite"}}/>
+                  LIVE
+                </span>
               )}
               {step!=="running" && logLines.length>0 && (
-                <span style={{fontSize:9,color:"#363636",fontFamily:"monospace"}}>
+                <span style={{fontSize:9,color:"var(--muted2)",fontFamily:"var(--mono)"}}>
                   {selCust}_{selAuto}.log
                 </span>
               )}
             </div>
             <div style={{display:"flex",gap:6}}>
               {selCust&&selAuto&&(
-                <button style={G.smallBtn} onClick={()=>loadLog(selCust,selAuto)}>↻</button>
+                <button style={G.smallBtn} onClick={()=>loadLog(selCust,selAuto)} title="Refresh log">
+                  <Icon name="refresh" size={10}/>
+                </button>
               )}
               <button style={G.smallBtn} onClick={()=>setLogLines([])}>Clear</button>
             </div>
@@ -378,17 +388,17 @@ export default function GenerateReport({ customers, navigate }) {
           <div style={G.logBox} ref={logRef}>
             {logLines.length===0 ? (
               <div style={{display:"flex",flexDirection:"column",alignItems:"center",
-                justifyContent:"center",height:"100%",color:"var(--border2)",gap:8}}>
-                <div style={{fontSize:28,opacity:.15}}>📋</div>
-                <div style={{fontSize:11,fontStyle:"italic"}}>
+                justifyContent:"center",height:"100%",color:"var(--muted3)",gap:8}}>
+                <Icon name="terminal" size={26} style={{opacity:.35}}/>
+                <div style={{fontSize:11}}>
                   {!selCust
                     ? "Select a customer to view logs"
                     : "No log history found"}
                 </div>
                 {selCust && !selAuto && (
-                  <button style={{...G.smallBtn,marginTop:4,color:"#B11226",borderColor:"rgba(177,18,38,.3)"}}
+                  <button style={{...G.smallBtn,marginTop:4,color:"var(--accent)",borderColor:"var(--border2)"}}
                     onClick={()=>loadAllLogs(selCust)}>
-                    ↻ Load All Logs
+                    <Icon name="refresh" size={10}/> Load all logs
                   </button>
                 )}
               </div>
@@ -396,7 +406,7 @@ export default function GenerateReport({ customers, navigate }) {
               logLines.map((l,i)=>(
                 <div key={i} style={{
                   fontSize:10,lineHeight:1.8,
-                  color: l.startsWith("──")?"#B11226":logColor(l),
+                  color: l.startsWith("──")?"var(--accent)":logColor(l),
                   fontWeight: l.startsWith("──")?"700":"400",
                   borderBottom: l.startsWith("──")?"1px solid var(--border)":"1px solid rgba(255,255,255,.02)",
                   paddingBottom:1,wordBreak:"break-all",
@@ -415,15 +425,19 @@ export default function GenerateReport({ customers, navigate }) {
       {otpModal && (
         <div className="modal-overlay">
           <div className="modal">
-            <div className="modal-header"><span>📧 OTP Verification</span></div>
+            <div className="modal-header">
+              <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
+                <Icon name="mail" size={14}/> OTP verification
+              </span>
+            </div>
             <div className="modal-body">
-              <p className="modal-note">OTP has been sent to your email. Enter the code below:</p>
-              <label className="form-label">OTP Code</label>
+              <p className="modal-note">A one-time code has been sent to your email. Enter it below to continue.</p>
+              <label className="form-label">OTP code</label>
               <input className="form-input" type="text" value={otp}
-                onChange={e=>setOtp(e.target.value)} placeholder="6-digit OTP" autoFocus/>
+                onChange={e=>setOtp(e.target.value)} placeholder="6-digit code" autoFocus/>
               <button className="btn-primary" style={{marginTop:12}}
                 onClick={handleOtpSubmit} disabled={!otp}>
-                ✓ Verify & Continue
+                <Icon name="check" size={12}/> Verify and continue
               </button>
             </div>
           </div>
@@ -435,13 +449,13 @@ export default function GenerateReport({ customers, navigate }) {
 
 const G = {
   root:      {height:"100%",display:"flex",flexDirection:"column",overflow:"hidden",
-              background:"var(--bg)",fontFamily:"'Inter',system-ui,sans-serif"},
+              background:"var(--bg)",fontFamily:"var(--font)"},
   topbar:    {display:"flex",alignItems:"center",justifyContent:"space-between",
               padding:"16px 24px 12px",borderBottom:"1px solid var(--border)",flexShrink:0,
               background:"var(--bg2)"},
-  title:     {fontSize:18,fontWeight:700,letterSpacing:"-.02em",color:"var(--text)"},
-  sub:       {fontSize:11,color:"var(--muted2)",marginTop:2},
-  layout:    {flex:1,display:"grid",gridTemplateColumns:"300px 1fr",gap:0,
+  title:     {fontSize:18,fontWeight:650,letterSpacing:"-.02em",color:"var(--text)"},
+  sub:       {fontSize:11.5,color:"var(--muted)",marginTop:2},
+  layout:    {flex:1,display:"grid",gridTemplateColumns:"330px 1fr",gap:0,
               overflow:"hidden",borderTop:"1px solid var(--border)"},
   sectionLabel:{fontSize:9,fontWeight:700,letterSpacing:".12em",color:"var(--muted3)",
                textTransform:"uppercase"},
@@ -461,7 +475,7 @@ const G = {
   infoBox:   {background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,padding:"11px"},
   tag:       {fontSize:9,fontWeight:600,padding:"2px 7px",borderRadius:3,
               background:"var(--surface2)",color:"var(--muted)",border:"1px solid var(--border)"},
-  genBtn:    {background:"#B11226",color:"#fff",border:"none",fontFamily:"inherit",
+  genBtn:    {background:"var(--accent)",color:"#fff",border:"none",fontFamily:"inherit",
               fontSize:12,fontWeight:600,padding:"11px",borderRadius:8,cursor:"pointer",
               display:"flex",alignItems:"center",justifyContent:"center",gap:8,
               transition:"background .15s",letterSpacing:".02em"},
@@ -471,13 +485,15 @@ const G = {
 
   /* Log column */
   logCol:    {padding:"18px 18px",display:"flex",flexDirection:"column",overflow:"hidden"},
-  logBox:    {flex:1,minHeight:0,fontFamily:"'JetBrains Mono','Fira Code',monospace",
+  logBox:    {flex:1,minHeight:0,fontFamily:"var(--mono)",
               fontSize:10,overflowY:"auto",background:"var(--bg3)",
               border:"1px solid var(--border)",borderRadius:8,
               padding:"10px 12px",lineHeight:1.7},
 
-  refreshBtn:{background:"none",border:"1px solid var(--border2)",color:"var(--muted)",
-              fontFamily:"inherit",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer"},
+  refreshBtn:{background:"none",border:"1px solid var(--border2)",color:"var(--text4)",
+              fontFamily:"inherit",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",
+              display:"inline-flex",alignItems:"center",gap:5},
   smallBtn:  {background:"none",border:"1px solid var(--border)",color:"var(--muted2)",
-              fontFamily:"inherit",fontSize:10,padding:"3px 9px",borderRadius:4,cursor:"pointer"},
+              fontFamily:"inherit",fontSize:10,padding:"3px 9px",borderRadius:4,cursor:"pointer",
+              display:"inline-flex",alignItems:"center",gap:4},
 };

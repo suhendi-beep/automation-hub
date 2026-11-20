@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from "react";
 import PageShell, { btn, input, label, card, table, th, td, badge, ErrorBox, fmtDate } from "../components/PageShell.jsx";
+import Icon from "../components/Icon.jsx";
 
 const CATEGORY_COLORS = {
-  auth: "#22C55E",
-  task: "#3B82F6",
-  alert: "#EF4444",
-  automation: "#F59E0B",
-  general: "#8B5CF6",
+  auth: "var(--green)",
+  task: "var(--blue)",
+  alert: "var(--red)",
+  automation: "var(--amber)",
+  general: "var(--muted)",
+};
+const CATEGORY_BG = {
+  auth: "var(--green-dim)",
+  task: "var(--blue-dim)",
+  alert: "var(--red-dim)",
+  automation: "var(--amber-dim)",
+  general: "var(--surface2)",
 };
 
 export default function ActivityLogsPage() {
@@ -44,6 +52,7 @@ export default function ActivityLogsPage() {
 
   return (
     <PageShell
+      icon="logs"
       title="Activity Logs"
       subtitle={`${entries.length} entr${entries.length === 1 ? "y" : "ies"} (newest first)`}
       actions={
@@ -51,7 +60,7 @@ export default function ActivityLogsPage() {
           style={btn}
           onClick={() => setFilters((f) => ({ ...f }))}
         >
-          Refresh
+          <Icon name="refresh" size={12}/> Refresh
         </button>
       }
     >
@@ -76,7 +85,7 @@ export default function ActivityLogsPage() {
           <input style={input} type="date" value={filters.to} onChange={set("to")} />
         </div>
         {(filters.user || filters.from || filters.to) && (
-          <button style={btn} onClick={() => setFilters({ user: "", from: "", to: "" })}>Clear filters</button>
+          <button style={btn} onClick={() => setFilters({ user: "", from: "", to: "" })}><Icon name="close" size={11}/> Clear filters</button>
         )}
       </div>
 
@@ -99,11 +108,11 @@ export default function ActivityLogsPage() {
             <tbody>
               {entries.slice(0, 500).map((e) => (
                 <tr key={e.id}>
-                  <td style={{ ...td, whiteSpace: "nowrap", fontSize: 11 }}>{fmtDate(e.ts)}</td>
-                  <td style={{ ...td, color: "var(--text2)", fontWeight: 600 }}>{e.display || e.username}</td>
+                  <td style={{ ...td, whiteSpace: "nowrap", fontSize: 11, fontFamily: "var(--mono)", color: "var(--muted)" }}>{fmtDate(e.ts)}</td>
+                  <td style={{ ...td, color: "var(--text)", fontWeight: 600 }}>{e.display || e.username}</td>
                   <td style={td}>{e.action}</td>
                   <td style={td}>
-                    <span style={badge(CATEGORY_COLORS[e.category] || "#8B5CF6")}>{e.category}</span>
+                    <span style={badge(CATEGORY_COLORS[e.category] || "var(--muted)", CATEGORY_BG[e.category])}>{e.category}</span>
                   </td>
                   <td style={{ ...td, color: "var(--muted)", fontSize: 11 }}>{e.detail || "—"}</td>
                 </tr>

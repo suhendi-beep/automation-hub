@@ -8,6 +8,7 @@
  * Animasi: slide-in dari kanan, dengan stagger jika ada >1 notif.
  */
 import React, { useState, useEffect } from "react";
+import Icon from "./Icon.jsx";
 
 /* ── CSS animation di-inject sekali ── */
 const STYLE_ID = "reminder-notif-style";
@@ -23,18 +24,11 @@ if (!document.getElementById(STYLE_ID)) {
   from { transform: translateX(0);    opacity: 1; }
   to   { transform: translateX(120%); opacity: 0; }
 }
-@keyframes notifPulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(177,18,38,.4); }
-  50%      { box-shadow: 0 0 0 8px rgba(177,18,38,0); }
-}
 .notif-card {
   animation: notifSlideIn .45s cubic-bezier(.16,1,.3,1) forwards;
 }
 .notif-card.leaving {
   animation: notifSlideOut .35s ease-in forwards;
-}
-.notif-ring {
-  animation: notifPulse 2s ease-in-out infinite;
 }
   `;
   document.head.appendChild(s);
@@ -70,10 +64,10 @@ function buildReminders(displayName, dismissedKeys) {
       reminders.push({
         id:    key,
         type:  "friday",
-        title: "Weekly Report Reminder",
-        message: `Hi ${displayName}, pastikan laporan mingguan sudah di-generate hari ini sebelum shift berakhir.`,
-        icon:  "📋",
-        color: "#B11226",
+        title: "Weekly report reminder",
+        message: `Hi ${displayName}, make sure this week's report has been generated before your shift ends.`,
+        icon:  "report",
+        color: "var(--accent)",
       });
     }
   }
@@ -92,10 +86,10 @@ function buildReminders(displayName, dismissedKeys) {
       reminders.push({
         id:    key,
         type:  "weekly_oci",
-        title: `OCI Weekly Capture — Week ${weekNum}`,
-        message: `Hi ${displayName}, mohon konfirmasi apakah Weekly Report Capture OCI Week ${weekNum} sudah selesai di-generate dan dikirimkan.`,
-        icon:  "🗂️",
-        color: "#3B82F6",
+        title: `OCI weekly capture — week ${weekNum}`,
+        message: `Hi ${displayName}, please confirm that OCI Weekly Capture for week ${weekNum} has been generated and sent.`,
+        icon:  "archive",
+        color: "var(--blue)",
       });
     }
   }
@@ -121,51 +115,44 @@ function NotifCard({ notif, onDone, onDismiss, index }) {
       style={{
         position:     "relative",
         background:   "var(--bg2)",
-        border:       `1px solid ${notif.color}55`,
-        borderLeft:   `4px solid ${notif.color}`,
-        borderRadius: 12,
-        padding:      "16px 16px 14px",
+        border:       "1px solid var(--border2)",
+        borderLeft:   `3px solid ${notif.color}`,
+        borderRadius: 10,
+        padding:      "14px 16px 13px",
         width:        340,
-        boxShadow:    "0 8px 32px rgba(0,0,0,.35), 0 2px 8px rgba(0,0,0,.2)",
+        boxShadow:    "var(--shadow-pop)",
         marginBottom: 10,
         animationDelay: `${index * 0.12}s`,
         animationFillMode: "both",
         overflow:     "hidden",
       }}>
 
-      {/* Shimmer bar on top */}
-      <div style={{
-        position: "absolute", top:0, left:0, right:0, height:2,
-        background: `linear-gradient(90deg, ${notif.color}00, ${notif.color}, ${notif.color}00)`,
-        backgroundSize: "200% 100%",
-        animation: "shimmerMove 2s linear infinite",
-      }}/>
-
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-        <div className="notif-ring" style={{
-          width:38, height:38, borderRadius:10,
-          background: notif.color + "18",
-          border: `1px solid ${notif.color}44`,
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:9 }}>
+        <div style={{
+          width:34, height:34, borderRadius:8,
+          background: "var(--surface2)",
+          border: "1px solid var(--border)",
           display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:18, flexShrink:0,
-        }}>{notif.icon}</div>
+          color: notif.color, flexShrink:0,
+        }}><Icon name={notif.icon} size={16}/></div>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:"var(--text2)", letterSpacing:".01em" }}>
+          <div style={{ fontSize:12, fontWeight:650, color:"var(--text)", letterSpacing:"-.01em" }}>
             {notif.title}
           </div>
-          <div style={{ fontSize:9, color:"var(--muted)", marginTop:1 }}>
-            {new Date().toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
+          <div style={{ fontSize:10, color:"var(--muted)", marginTop:1 }}>
+            {new Date().toLocaleDateString("en-GB",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
           </div>
         </div>
-        {/* Close × */}
         <button onClick={() => close("dismiss")}
-          style={{ background:"none", border:"none", color:"var(--muted3)", fontSize:14,
-            cursor:"pointer", lineHeight:1, padding:"2px 4px", flexShrink:0 }}>✕</button>
+          style={{ display:"flex", background:"none", border:"none", color:"var(--muted3)",
+            cursor:"pointer", padding:"3px", flexShrink:0 }}>
+          <Icon name="close" size={13}/>
+        </button>
       </div>
 
       {/* Message */}
-      <p style={{ fontSize:12, color:"var(--text3)", lineHeight:1.6, margin:"0 0 14px" }}>
+      <p style={{ fontSize:11.5, color:"var(--text4)", lineHeight:1.6, margin:"0 0 13px" }}>
         {notif.message}
       </p>
 
@@ -174,27 +161,27 @@ function NotifCard({ notif, onDone, onDismiss, index }) {
         <button onClick={() => close("done")}
           style={{
             flex:1, background: notif.color, color:"#fff", border:"none",
-            fontFamily:"inherit", fontSize:11, fontWeight:700,
-            padding:"8px 0", borderRadius:7, cursor:"pointer",
+            fontFamily:"inherit", fontSize:11, fontWeight:600,
+            padding:"7px 0", borderRadius:6, cursor:"pointer",
             display:"flex", alignItems:"center", justifyContent:"center", gap:5,
             transition:"filter .15s",
           }}
-          onMouseEnter={e => e.currentTarget.style.filter="brightness(1.15)"}
+          onMouseEnter={e => e.currentTarget.style.filter="brightness(1.08)"}
           onMouseLeave={e => e.currentTarget.style.filter="none"}>
-          ✅ Sudah Selesai
+          <Icon name="check" size={11}/> Done
         </button>
         <button onClick={() => close("dismiss")}
           style={{
-            flex:1, background:"var(--surface2)", color:"var(--muted)",
+            flex:1, background:"var(--surface2)", color:"var(--text4)",
             border:"1px solid var(--border2)",
-            fontFamily:"inherit", fontSize:11, fontWeight:600,
-            padding:"8px 0", borderRadius:7, cursor:"pointer",
+            fontFamily:"inherit", fontSize:11, fontWeight:500,
+            padding:"7px 0", borderRadius:6, cursor:"pointer",
             display:"flex", alignItems:"center", justifyContent:"center", gap:5,
             transition:"background .15s",
           }}
           onMouseEnter={e => e.currentTarget.style.background="var(--surface3)"}
           onMouseLeave={e => e.currentTarget.style.background="var(--surface2)"}>
-          🕐 Ingatkan Lagi
+          <Icon name="clock" size={11}/> Remind later
         </button>
       </div>
     </div>
@@ -203,7 +190,7 @@ function NotifCard({ notif, onDone, onDismiss, index }) {
 
 /* ── Main component ── */
 export default function ReminderNotif() {
-  const displayName = sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "tim";
+  const displayName = sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "team";
   const username    = sessionStorage.getItem("pr_user") || "unknown";
   const STORAGE_KEY = `pr_notif_dismissed_${username}`;
 
@@ -244,12 +231,6 @@ export default function ReminderNotif() {
       alignItems: "flex-end",
       pointerEvents: "none",
     }}>
-      <style>{`
-        @keyframes shimmerMove {
-          from { background-position: -200% 0; }
-          to   { background-position:  200% 0; }
-        }
-      `}</style>
       {active.map((n, i) => (
         <div key={n.id} style={{ pointerEvents:"auto" }}>
           <NotifCard

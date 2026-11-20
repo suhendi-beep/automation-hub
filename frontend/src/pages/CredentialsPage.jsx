@@ -3,6 +3,7 @@ import PageShell, {
   btn, btnPrimary, btnDanger, input, label, card, table, th, td, badge, ErrorBox, fmtDate,
 } from "../components/PageShell.jsx";
 import OciModal from "../components/OciModal.jsx";
+import Icon from "../components/Icon.jsx";
 
 export default function CredentialsPage({ currentRole, currentUser, ociSession, onOciChange }) {
   const isAdmin = currentRole === "admin";
@@ -94,30 +95,36 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
 
   return (
     <PageShell
+      icon="key"
       title="Credentials"
       subtitle="OCI session and application user accounts"
-      actions={isAdmin ? <button style={btnPrimary} onClick={() => setModal({ mode: "add", username: "", display: "", password: "", role: "engineer" })}>+ Add user</button> : null}
+      actions={isAdmin ? <button style={btnPrimary} onClick={() => setModal({ mode: "add", username: "", display: "", password: "", role: "engineer" })}><Icon name="plus" size={12}/> Add user</button> : null}
     >
       <ErrorBox message={error} />
 
       <div style={{ ...card, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>OCI Session</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
-              {ociSession?.logged_in
-                ? `Connected (${ociSession.count || 0} cookies, saved ${fmtDate(ociSession.saved_at)})`
-                : "Not connected — backup automations requiring OCI login will be blocked."}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 9, border: "1px solid var(--border)", background: "var(--surface2)", color: "var(--muted)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Icon name="cloud" size={16}/>
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>OCI session</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
+                {ociSession?.logged_in
+                  ? `Connected — ${ociSession.count || 0} cookies, saved ${fmtDate(ociSession.saved_at)}`
+                  : "Not connected. Backup automations requiring OCI login will be blocked."}
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             {ociSession?.logged_in ? (
               <>
-                <button style={btn} onClick={() => setShowOci(true)}>Manage</button>
-                <button style={btnDanger} onClick={disconnectOci}>Disconnect</button>
+                <button style={btn} onClick={() => setShowOci(true)}><Icon name="settings" size={12}/> Manage</button>
+                <button style={btnDanger} onClick={disconnectOci}><Icon name="logout" size={12}/> Disconnect</button>
               </>
             ) : (
-              <button style={btnPrimary} onClick={() => setShowOci(true)}>Connect OCI</button>
+              <button style={btnPrimary} onClick={() => setShowOci(true)}><Icon name="link" size={12}/> Connect OCI</button>
             )}
           </div>
         </div>
@@ -125,7 +132,7 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
 
       <div style={{ ...card, padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text2)" }}>Application Users</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Application users</div>
           <div style={{ fontSize: 10, color: "var(--muted2)" }}>
             {isAdmin ? "Admin actions enabled" : "Read-only — admin access required to modify users"}
           </div>
@@ -142,10 +149,10 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
           <tbody>
             {users.map((u) => (
               <tr key={u.username}>
-                <td style={{ ...td, color: "var(--text2)", fontWeight: 600 }}>
+                <td style={{ ...td, color: "var(--text)", fontWeight: 600 }}>
                   {u.username}
                   {u.username === currentUser && (
-                    <span style={{ ...badge("#22C55E"), marginLeft: 8 }}>you</span>
+                    <span style={{ ...badge("var(--green)", "var(--green-dim)"), marginLeft: 8 }}>you</span>
                   )}
                 </td>
                 <td style={td}>{u.display}</td>
@@ -160,16 +167,16 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
                       <option value="admin">admin</option>
                     </select>
                   ) : (
-                    <span style={badge(u.role === "admin" ? "#B11226" : "#3B82F6")}>{u.role}</span>
+                    <span style={badge(u.role === "admin" ? "var(--accent)" : "var(--blue)", u.role === "admin" ? "var(--accent-soft)" : "var(--blue-dim)")}>{u.role}</span>
                   )}
                 </td>
                 {isAdmin && (
                   <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                     <button style={{ ...btn, marginRight: 6 }} onClick={() => setModal({ mode: "reset", username: u.username, password: "" })}>
-                      Reset password
+                      <Icon name="key" size={11}/> Reset password
                     </button>
                     {u.username !== currentUser && (
-                      <button style={btnDanger} onClick={() => removeUser(u)}>Delete</button>
+                      <button style={btnDanger} onClick={() => removeUser(u)}><Icon name="trash" size={11}/> Delete</button>
                     )}
                   </td>
                 )}
@@ -192,8 +199,11 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
         <div className="modal-overlay" onClick={() => setModal(null)}>
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <span>{modal.mode === "add" ? "Add user" : `Reset password — ${modal.username}`}</span>
-              <button className="modal-close" onClick={() => setModal(null)}>✕</button>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Icon name={modal.mode === "add" ? "user" : "key"} size={14}/>
+                {modal.mode === "add" ? "Add user" : `Reset password — ${modal.username}`}
+              </span>
+              <button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><Icon name="close" size={14}/></button>
             </div>
             <div className="modal-body">
               {modal.mode === "add" && (
@@ -224,7 +234,7 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
                 onClick={saveUser}
                 disabled={saving || modal.password.length < 8 || (modal.mode === "add" && !modal.username.trim())}
               >
-                {saving ? "Saving…" : modal.mode === "add" ? "Create user" : "Reset password"}
+                <Icon name="check" size={12}/> {saving ? "Saving…" : modal.mode === "add" ? "Create user" : "Reset password"}
               </button>
             </div>
           </div>

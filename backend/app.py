@@ -5,12 +5,15 @@ import logging.handlers
 import os
 import re
 import secrets
+import socket
+import ssl
 import tempfile
 import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory
@@ -715,29 +718,461 @@ def grafana_alerts():
         return jsonify({"alerts": [], "configured": True, "error": str(e)})
 
 
+# ── Daily backup database catalog ───────────────────────────
+@app.route("/api/backup/databases")
+def backup_databases():
+    """Databases covered by the daily backup check. Alerts whose resource maps
+    to one of these DBs should be investigated with Top SQL / Performance Hub."""
+    try:
+        from tasks.pelindo.daily_ilcs_status import DATABASES_ILCS, DATABASES_PELINDO
+    except Exception as e:
+        log.exception("Backup database catalog unavailable")
+        return jsonify({"databases": [], "error": str(e)}), 500
+
+    def region_of(ocid):
+        parts = (ocid or "").split(".")
+        return parts[3] if len(parts) > 3 and parts[3] else "ap-singapore-1"
+
+    databases = [
+        {"name": name, "ocid": ocid, "region": region_of(ocid), "group": group}
+        for group, rows in (("ILCS", DATABASES_ILCS), ("PELINDO", DATABASES_PELINDO))
+        for name, ocid in rows
+    ]
+    return jsonify({"databases": databases})
+
+
+# ── HealthCheck evidence (blackbox URL) ─────────────────────
+_HEALTH_CACHE = {"at": 0.0, "urls": set()}
+_HEALTH_LOCK = threading.Lock()
+WIB_TZ = timezone(timedelta(hours=7))
+
+
+def _norm_probe_url(url):
+    return (url or "").strip().rstrip("/")
+
+
+def _extract_http_url(value):
+    """Pull a URL out of labels such as '[name] https://host/health'."""
+    m = re.search(r"https?://[^\s\"'\]\)]+", str(value or ""), re.I)
+    return _norm_probe_url(m.group(0)) if m else ""
+
+
+def _active_health_urls():
+    with _HEALTH_LOCK:
+        if _HEALTH_CACHE["urls"] and time.time() - _HEALTH_CACHE["at"] < 60:
+            return set(_HEALTH_CACHE["urls"])
+    try:
+        alerts = fetch_grafana_alerts()
+    except Exception:
+        with _HEALTH_LOCK:
+            if _HEALTH_CACHE["urls"]:
+                return set(_HEALTH_CACHE["urls"])
+        raise
+
+    urls = set()
+    for alert in alerts:
+        labels = alert.get("labels") or {}
+        for candidate in (alert.get("resource"), labels.get("instance")):
+            url = _extract_http_url(candidate)
+            if url:
+                urls.add(url)
+    with _HEALTH_LOCK:
+        _HEALTH_CACHE["at"] = time.time()
+        _HEALTH_CACHE["urls"] = urls
+    return set(urls)
+
+
+def _iso_ts(ts):
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _fmt_wib(iso):
+    if not iso:
+        return "-"
+    try:
+        return datetime.fromisoformat(iso).astimezone(WIB_TZ).strftime("%d %b %Y %H:%M WIB")
+    except Exception:
+        return iso
+
+
+def _probe_http(url):
+    out = {
+        "url": url, "ok": False, "reachable": False, "status_code": None,
+        "latency_ms": None, "final_url": url, "redirects": [],
+        "server": None, "content_type": None, "body_snippet": None,
+        "tls_verified": None, "error": None, "error_type": None,
+    }
+    started = time.monotonic()
+
+    def fetch(verify):
+        return requests.get(
+            url, timeout=(5, 10), allow_redirects=True, stream=True,
+            verify=verify,
+            headers={"User-Agent": "ILCS-Portal-Evidence/1.0"},
+        )
+
+    try:
+        try:
+            resp = fetch(True)
+            out["tls_verified"] = True
+        except requests.exceptions.SSLError:
+            # Sertifikat internal bisa self-signed. Tetap ambil bukti HTTP-nya,
+            # sementara status TLS dilaporkan terpisah oleh _tls_info().
+            out["tls_verified"] = False
+            resp = fetch(False)
+        with resp:
+            out["latency_ms"] = int(round((time.monotonic() - started) * 1000))
+            out["status_code"] = resp.status_code
+            out["reachable"] = True
+            out["ok"] = resp.status_code < 400
+            out["final_url"] = resp.url
+            out["server"] = resp.headers.get("Server")
+            out["content_type"] = resp.headers.get("Content-Type")
+            out["redirects"] = [
+                {
+                    "status": h.status_code,
+                    "url": h.url,
+                    "location": h.headers.get("Location"),
+                }
+                for h in resp.history
+            ]
+            try:
+                body = resp.raw.read(2048, decode_content=True) or b""
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if body and any(t in ctype for t in ("text/", "json", "html", "xml")):
+                    snippet = body.decode(resp.encoding or "utf-8", "replace")
+                    snippet = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", snippet,
+                                     flags=re.I)
+                    snippet = re.sub(r"<[^>]+>", " ", snippet)
+                    snippet = re.sub(r"\s+", " ", snippet).strip()
+                    out["body_snippet"] = snippet[:240] or None
+            except Exception:
+                pass
+    except requests.exceptions.Timeout as e:
+        out["error_type"] = "timeout"
+        out["error"] = str(e) or "request timeout"
+    except requests.exceptions.SSLError as e:
+        out["error_type"] = "tls"
+        out["error"] = str(e)
+    except requests.exceptions.ConnectionError as e:
+        out["error_type"] = "connection"
+        out["error"] = str(e)
+    except requests.exceptions.RequestException as e:
+        out["error_type"] = "http"
+        out["error"] = str(e)
+    except ValueError as e:
+        out["error_type"] = "invalid_url"
+        out["error"] = str(e)
+    return out
+
+
+def _tls_info(url):
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        return None
+    host = parts.hostname
+    port = parts.port or 443
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=6) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls_sock:
+                cert = tls_sock.getpeercert()
+        not_after = cert.get("notAfter")
+        expires = datetime.fromtimestamp(
+            ssl.cert_time_to_seconds(not_after), tz=timezone.utc)
+        issuer = {k: v for tup in cert.get("issuer", ()) for k, v in tup}
+        return {
+            "valid": True,
+            "not_after": expires.isoformat(),
+            "days_left": (expires - datetime.now(timezone.utc)).days,
+            "issuer": issuer.get("commonName") or issuer.get("organizationName") or "-",
+        }
+    except Exception as e:
+        return {"valid": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _prom_range(uid, query, start, end, step=60):
+    resp = requests.get(
+        f"{GRAFANA_BASE_URL}/api/datasources/proxy/uid/{uid}/api/v1/query_range",
+        auth=(GRAFANA_USER, GRAFANA_PASS),
+        params={"query": query, "start": start, "end": end, "step": step},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json() or {}
+    return ((data.get("data") or {}).get("result") or [])
+
+
+def _series_points(values):
+    points = []
+    for pair in values or []:
+        try:
+            points.append((float(pair[0]), str(pair[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    points.sort()
+    return points
+
+
+def _probe_history(url, minutes):
+    end = int(time.time())
+    start = end - minutes * 60
+    inst = url.replace("\\", "\\\\").replace('"', '\\"')
+    out = {
+        "datasource": None, "window_min": minutes, "samples": 0,
+        "uptime_pct": None, "current_success": None, "current_since": None,
+        "last_ok_at": None, "last_fail_at": None, "down_minutes": None,
+        "latency_avg_ms": None, "latency_max_ms": None, "status_codes": [],
+        "first_at": None, "last_at": None,
+    }
+
+    for folder, uid in GRAFANA_PROM_DATASOURCES:
+        try:
+            result = _prom_range(
+                uid, f'probe_success{{instance="{inst}"}}', start, end)
+        except Exception as e:
+            log.warning("HealthCheck metrics %s gagal: %s", folder, e)
+            continue
+        points = _series_points((result[0] if result else {}).get("values"))
+        if not points:
+            continue
+
+        out["datasource"] = folder
+        total = len(points)
+        ups = sum(1 for _, value in points if value == "1")
+        current = points[-1][1] == "1"
+        since_idx = total - 1
+        while since_idx > 0 and points[since_idx - 1][1] == points[-1][1]:
+            since_idx -= 1
+        ok_times = [t for t, value in points if value == "1"]
+        fail_times = [t for t, value in points if value != "1"]
+
+        out.update(
+            samples=total,
+            uptime_pct=round(100.0 * ups / total, 1),
+            current_success=current,
+            current_since=_iso_ts(points[since_idx][0]),
+            last_ok_at=_iso_ts(max(ok_times)) if ok_times else None,
+            last_fail_at=_iso_ts(max(fail_times)) if fail_times else None,
+            down_minutes=0 if current else max(
+                0, int((points[-1][0] - points[since_idx][0]) // 60)),
+            first_at=_iso_ts(points[0][0]),
+            last_at=_iso_ts(points[-1][0]),
+        )
+
+        try:
+            lat_res = _prom_range(
+                uid, f'probe_duration_seconds{{instance="{inst}"}}', start, end)
+            lat_values = [
+                float(value)
+                for _, value in _series_points(
+                    (lat_res[0] if lat_res else {}).get("values"))
+                if value not in ("NaN", "+Inf", "-Inf")
+            ]
+            if lat_values:
+                out["latency_avg_ms"] = int(round(1000 * sum(lat_values) / len(lat_values)))
+                out["latency_max_ms"] = int(round(1000 * max(lat_values)))
+        except Exception:
+            pass
+
+        try:
+            status_res = _prom_range(
+                uid, f'probe_http_status_code{{instance="{inst}"}}', start, end)
+            codes = set()
+            for series in status_res:
+                pts = _series_points(series.get("values"))
+                if pts and pts[-1][1] not in ("NaN", "+Inf", "-Inf"):
+                    try:
+                        codes.add(int(float(pts[-1][1])))
+                    except ValueError:
+                        pass
+            out["status_codes"] = sorted(codes)
+        except Exception:
+            pass
+        break
+
+    return out
+
+
+def _health_conclusion(probe, tls, prom):
+    if probe.get("ok"):
+        head = f"URL merespons normal (HTTP {probe.get('status_code')})."
+    elif probe.get("reachable"):
+        head = (
+            f"Server merespons tetapi tidak sehat: HTTP {probe.get('status_code')} "
+            f"dalam {probe.get('latency_ms')} ms."
+        )
+    else:
+        head = (
+            f"URL gagal dihubungi: {probe.get('error_type') or 'error'} — "
+            f"{probe.get('error') or 'tanpa detail'}."
+        )
+
+    extra = []
+    if prom.get("samples"):
+        extra.append(
+            f"Blackbox mencatat uptime {prom.get('uptime_pct')}% dalam "
+            f"{prom.get('window_min')} menit terakhir."
+        )
+        if prom.get("current_success") is False and prom.get("down_minutes"):
+            extra.append(f"Status down sejak {_fmt_wib(prom.get('current_since'))} "
+                         f"(±{prom.get('down_minutes')} menit).")
+    if tls and tls.get("valid"):
+        extra.append(f"Sertifikat TLS berlaku sampai {_fmt_wib(tls.get('not_after'))}.")
+    elif tls and tls.get("valid") is False:
+        extra.append(f"Pemeriksaan TLS gagal: {tls.get('error')}.")
+    return " ".join([head] + extra)
+
+
+def _health_report_text(url, minutes, probe, tls, prom, conclusion, generated_at):
+    lines = [
+        "Laporan Pengecekan Health Check",
+        f"URL          : {url}",
+        f"Waktu cek    : {generated_at}",
+        f"Window       : {minutes} menit terakhir",
+        "",
+        "PROBE LANGSUNG",
+    ]
+    if probe.get("status_code") is not None:
+        lines.append(
+            f"Status       : HTTP {probe['status_code']} "
+            f"({probe.get('latency_ms')} ms) — "
+            f"{'OK' if probe.get('ok') else 'tidak sehat'}"
+        )
+    else:
+        lines.append(f"Status       : GAGAL ({probe.get('error_type')})")
+        lines.append(f"Error        : {probe.get('error')}")
+    if probe.get("final_url") and probe.get("final_url") != url:
+        lines.append(f"URL akhir    : {probe['final_url']}")
+    if probe.get("redirects"):
+        lines.append(f"Redirect     : {len(probe['redirects'])} kali")
+        for hop in probe["redirects"]:
+            lines.append(f"  {hop['status']} {hop['url']}")
+    if probe.get("server"):
+        lines.append(f"Server       : {probe['server']}")
+    if probe.get("tls_verified") is False:
+        lines.append("TLS verify   : GAGAL (probe diulang tanpa verifikasi sertifikat)")
+    if probe.get("body_snippet"):
+        lines.append(f"Cuplikan     : {probe['body_snippet']}")
+
+    lines += ["", "TLS"]
+    if tls is None:
+        lines.append("Tidak berlaku (URL bukan HTTPS)")
+    elif tls.get("valid"):
+        lines.append(f"Issuer       : {tls.get('issuer')}")
+        lines.append(f"Berlaku s/d  : {_fmt_wib(tls.get('not_after'))} ({tls.get('days_left')} hari)")
+    else:
+        lines.append(f"Tidak valid  : {tls.get('error')}")
+
+    lines += ["", "BLACKBOX (Grafana)"]
+    if prom.get("samples"):
+        lines.append(f"Data source  : {prom.get('datasource')}")
+        lines.append(
+            f"Uptime       : {prom.get('uptime_pct')}% "
+            f"({prom.get('samples')} sampel)"
+        )
+        lines.append(f"Status kini  : {'UP' if prom.get('current_success') else 'DOWN'}")
+        lines.append(f"Terakhir OK  : {_fmt_wib(prom.get('last_ok_at'))}")
+        lines.append(f"Terakhir fail: {_fmt_wib(prom.get('last_fail_at'))}")
+        if prom.get("current_success") is False:
+            lines.append(f"Down sejak   : {_fmt_wib(prom.get('current_since'))} "
+                         f"(±{prom.get('down_minutes')} menit)")
+        if prom.get("latency_avg_ms") is not None:
+            lines.append(
+                f"Latency      : avg {prom.get('latency_avg_ms')} ms, "
+                f"max {prom.get('latency_max_ms')} ms"
+            )
+        if prom.get("status_codes"):
+            lines.append("HTTP codes   : " + ", ".join(map(str, prom["status_codes"])))
+    else:
+        lines.append("Tidak ada metrik probe_success untuk URL ini di data source Grafana.")
+
+    lines += ["", "KESIMPULAN", conclusion]
+    return "\n".join(lines)
+
+
+@app.route("/api/healthcheck/evidence")
+def healthcheck_evidence():
+    url = _extract_http_url(request.args.get("url"))
+    if not re.match(r"^https?://", url, re.I):
+        return jsonify({"ok": False, "error": "Parameter url wajib berupa http(s) URL"}), 400
+    try:
+        minutes = max(5, min(1440, int(request.args.get("minutes", "60"))))
+    except ValueError:
+        minutes = 60
+
+    try:
+        allowed = _active_health_urls()
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": f"Tidak dapat memverifikasi URL dari alert Grafana: {e}",
+        }), 503
+    if url not in allowed:
+        return jsonify({
+            "ok": False,
+            "error": "URL ini bukan HealthCheckDown/blackbox yang sedang aktif",
+        }), 404
+
+    probe = _probe_http(url)
+    tls = _tls_info(url)
+    prom = _probe_history(url, minutes)
+    conclusion = _health_conclusion(probe, tls, prom)
+    generated_at = datetime.now(WIB_TZ).isoformat()
+
+    return jsonify({
+        "ok": True,
+        "url": url,
+        "minutes": minutes,
+        "generated_at": generated_at,
+        "probe": probe,
+        "tls": tls,
+        "prom": prom,
+        "conclusion": conclusion,
+        "report_text": _health_report_text(
+            url, minutes, probe, tls, prom, conclusion, generated_at),
+    })
+
+
 @app.route("/api/oci/dbm/top-sql")
 def oci_dbm_top_sql():
     ocid = (request.args.get("ocid") or "").strip()
     refresh = request.args.get("refresh") == "1"
     m = oci_dbm.OCID_RE.match(ocid)
-    region = m.group(1) if m else ""
-    console_url = (
-        f"https://cloud.oracle.com/dbmgmt-ui/perfhub?region={region}&ocid={ocid}"
-        if m else ""
-    )
+    sys_m = oci_dbm.DBSYSTEM_OCID_RE.match(ocid)
+    region = (m or sys_m).group(1) if (m or sys_m) else ""
+    if m:
+        console_url = (
+            f"https://cloud.oracle.com/dbmgmt-ui/perfhub?region={region}&ocid={ocid}"
+        )
+        console_label = "Buka PerfHub di OCI Console"
+    elif sys_m:
+        console_url = f"https://cloud.oracle.com/db/db-systems?region={region}"
+        console_label = "Buka DB Systems di OCI Console"
+    else:
+        console_url = ""
+        console_label = ""
     try:
-        return jsonify(oci_dbm.get_top_sql(ocid, refresh=refresh))
+        data = oci_dbm.get_top_sql(ocid, refresh=refresh)
+        data["console_url"] = console_url
+        data["console_label"] = console_label
+        return jsonify(data)
     except oci_dbm.OciError as e:
         log.warning("DBM top-sql failed (%s): %s", e.code, e.message)
         return jsonify({
             "ok": False, "code": e.code, "error": e.message,
-            "ocid": ocid, "region": region, "console_url": console_url,
+            "ocid": ocid, "region": region,
+            "console_url": console_url, "console_label": console_label,
         }), e.status
     except Exception as e:
         log.exception("DBM top-sql unexpected error")
         return jsonify({
             "ok": False, "code": "internal", "error": str(e),
-            "ocid": ocid, "region": region, "console_url": console_url,
+            "ocid": ocid, "region": region,
+            "console_url": console_url, "console_label": console_label,
         }), 500
 
 

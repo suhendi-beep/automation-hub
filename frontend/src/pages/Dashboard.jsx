@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import Icon from "../components/Icon.jsx";
 import { localISODate } from "../api.js";
 
 /* ── helpers ── */
@@ -11,10 +12,10 @@ function fmtNowWIB() {
 }
 function greetingByHour() {
   const h = new Date().getHours();
-  if (h < 11) return "Good Morning,";
-  if (h < 15) return "Good Afternoon,";
-  if (h < 19) return "Good Evening,";
-  return "Good Night,";
+  if (h < 11) return "Good morning";
+  if (h < 15) return "Good afternoon";
+  if (h < 19) return "Good evening";
+  return "Good evening";
 }
 function timeAgo(iso) {
   if (!iso) return "-";
@@ -26,16 +27,23 @@ function timeAgo(iso) {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
 }
+function severityStyle(sev) {
+  const s = (sev || "").toLowerCase();
+  if (s.includes("critical") || s.includes("high")) return { color: "var(--red)", background: "var(--red-dim)", borderColor: "var(--red-dim)" };
+  if (s.includes("warning") || s.includes("medium")) return { color: "var(--amber)", background: "var(--amber-dim)", borderColor: "var(--amber-dim)" };
+  if (s.includes("info") || s.includes("low")) return { color: "var(--blue)", background: "var(--blue-dim)", borderColor: "var(--blue-dim)" };
+  return { color: "var(--muted)", background: "var(--surface3)", borderColor: "var(--border)" };
+}
 
-/* ── Grafana Alerts donut (Critical / Warning / Info) ── */
+/* ── Grafana Alerts donut ── */
 function AlertDonut({ critical, warning, info }) {
   const total = critical + warning + info;
-  const r = 44, cx = 50, cy = 50, stroke = 11;
+  const r = 44, cx = 50, cy = 50, stroke = 10;
   const circ = 2 * Math.PI * r;
   const slices = [
-    { val: critical, color: "#EF4444" },
-    { val: warning,  color: "#F59E0B" },
-    { val: info,      color: "#3B82F6" },
+    { val: critical, color: "var(--red)" },
+    { val: warning,  color: "var(--amber)" },
+    { val: info,     color: "var(--blue)" },
   ];
   let offset = 0;
   const paths = slices.map((s, i) => {
@@ -54,21 +62,20 @@ function AlertDonut({ critical, warning, info }) {
     <svg viewBox="0 0 100 100" width="118" height="118">
       <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface3)" strokeWidth={stroke} />
       {paths}
-      <text x={cx} y={cy+6} textAnchor="middle" fontSize="24" fontWeight="800" fill="var(--text)" fontFamily="Inter">{total}</text>
+      <text x={cx} y={cy+2} textAnchor="middle" fontSize="23" fontWeight="700" fill="var(--text)" fontFamily="Inter">{total}</text>
+      <text x={cx} y={cy+14} textAnchor="middle" fontSize="7.5" fill="var(--muted)" fontFamily="Inter" letterSpacing=".8">FIRING</text>
     </svg>
   );
 }
 
-export default function Dashboard({ customers, navigate, currentUser, darkMode, toggleDark }) {
+export default function Dashboard({ customers, navigate, currentUser }) {
   const [alerts,       setAlerts]       = useState([]);
   const [alertsError,  setAlertsError]  = useState(null);
   const [history,      setHistory]      = useState([]);
   const [tasks,        setTasks]        = useState([]);
   const [dailySummary, setDailySummary] = useState({ total:null, success:null, failed:null, rate:null, health:null, lastRun:null });
   const [now,          setNow]          = useState(fmtNowWIB());
-  const [runningReport,setRunningReport]= useState(null); // {key, taskId}
-
-  const initials = (currentUser || "?").slice(0,1).toUpperCase();
+  const [runningReport,setRunningReport]= useState(null);
 
   /* ── fetchers ── */
   const fetchAlerts = useCallback(() => {
@@ -116,7 +123,6 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
     return () => { clearInterval(ivAlerts); clearInterval(ivRest); clearInterval(ivClock); };
   }, [fetchAlerts, fetchHistory, fetchTasks, fetchDailyLog]);
 
-  // Poll running report task status
   useEffect(() => {
     if (!runningReport) return;
     const iv = setInterval(async () => {
@@ -140,15 +146,51 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
   const lastDailyRun = history.find(h => h.automation === "daily_ilcs_status");
   const dailyOk = lastDailyRun ? lastDailyRun.size_kb > 0 : null;
 
-  const lastWeeklyRuns = history.filter(h => h.automation === "grafana_capture" || h.automation.startsWith("oci_"));
-  const weeklyAvailable = lastWeeklyRuns.length;
-
   const alertOnlyTasks = tasks.filter(t => (t.description || "").startsWith("[ALERT]"));
   const todayStr = localISODate();
   const ticketsToday  = alertOnlyTasks.filter(t => (t.date || "").slice(0,10) === todayStr).length;
   const ticketsClosed = alertOnlyTasks.filter(t => t.status === "Close").length;
 
   const servicesHealthy = dailySummary.rate ? dailySummary.rate : (dailySummary.total ? `${Math.round((dailySummary.success/dailySummary.total)*100)}%` : "—");
+
+  // Top alert incidents from the last 30 days of alert tickets.
+  // Grouped by alert name + resource so each recurring incident stays traceable.
+  const incidentWindowStart = localISODate(new Date(Date.now() - 29 * 86400000));
+  const incidentMap = new Map();
+  alertOnlyTasks.forEach(t => {
+    const date = (t.date || "").slice(0, 10);
+    if (!date || date < incidentWindowStart) return;
+
+    const body = (t.description || "").replace(/^\[ALERT\]\s*/, "");
+    const [namePart, ...rest] = body.split(" → ");
+    const name = namePart.trim();
+    const resource = rest.join(" → ").trim();
+    if (!name) return;
+
+    const detail = t.detail || "";
+    const severity = (/Severity:\s*([^\n]+)/.exec(detail)?.[1] || "").trim();
+    const folder   = (/Folder:\s*([^\n]+)/.exec(detail)?.[1] || "").trim();
+    const ticket   = (/Ticket:\s*([^\n]+)/.exec(detail)?.[1] || "").trim();
+    const seenAt   = t.createdAt || date;
+
+    const key = `${name}||${resource}`;
+    const cur = incidentMap.get(key) || {
+      name, resource, count: 0, lastSeen: "", severity: "", folder: "", ticket: "",
+    };
+    cur.count += 1;
+    if (!cur.lastSeen || new Date(seenAt) >= new Date(cur.lastSeen)) {
+      cur.lastSeen = seenAt;
+      if (severity && severity !== "-") cur.severity = severity;
+      if (folder) cur.folder = folder;
+      if (ticket) cur.ticket = ticket;
+    }
+    incidentMap.set(key, cur);
+  });
+  const topIncidents = [...incidentMap.values()]
+    .sort((a, b) => b.count - a.count || new Date(b.lastSeen) - new Date(a.lastSeen))
+    .slice(0, 5);
+  const incidentTotal = [...incidentMap.values()].reduce((s, v) => s + v.count, 0);
+  const maxIncidentCount = topIncidents[0]?.count || 1;
 
   const runReport = async (automationId) => {
     if (runningReport) return;
@@ -163,122 +205,142 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
   };
 
   const weeklyShortcuts = [
-    { id: "infra_summary",  label: "Infrastructure\nSummary",  icon: "📈", kind: "run",    automation: "grafana_capture" },
-    { id: "resource_util",  label: "Resource\nUtilization",    icon: "🗄",  kind: "run",    automation: "grafana_capture" },
-    { id: "cost_overview",  label: "Cost\nOverview",           icon: "💲", kind: "soon" },
-    { id: "security",       label: "Security\nOverview",       icon: "🛡",  kind: "soon" },
-    { id: "ticket_summary", label: "Ticket\nSummary",          icon: "🎫", kind: "info",   value: `${ticketsClosed}/${alertOnlyTasks.length}` },
-    { id: "incident_report",label: "Incident\nReport",         icon: "📅", kind: "info",   value: `${ticketsToday} today` },
+    { id: "infra_summary",  label: "Infrastructure summary", icon: "grafana",  kind: "run",    automation: "grafana_capture" },
+    { id: "resource_util",  label: "Resource utilization",   icon: "server",   kind: "run",    automation: "grafana_capture" },
+    { id: "cost_overview",  label: "Cost overview",          icon: "accounts", kind: "soon" },
+    { id: "security",       label: "Security overview",      icon: "shield",   kind: "soon" },
+    { id: "ticket_summary", label: "Ticket summary",         icon: "ticket",   kind: "info",   value: `${ticketsClosed}/${alertOnlyTasks.length} closed` },
+    { id: "incident_report",label: "Incident report",        icon: "calendar", kind: "info",   value: `${ticketsToday} today` },
   ];
 
   return (
     <div style={S.root}>
-      {/* ── TOPBAR ── */}
-      <header style={S.topbar}>
-        <div>
-          <div style={S.greetSmall}>{greetingByHour()}</div>
-          <div style={S.greetTitle}>Monitoring Overview</div>
-          <div style={S.greetSub}>Keep your infrastructure healthy and reports up to date.</div>
-        </div>
-        <div style={S.topbarRight}>
-          <div style={S.clockBlock}>
-            <span style={S.clockIcon}>🕐</span>
-            <span>{now} WIB</span>
-          </div>
-          <div style={S.liveBadge}><span style={S.liveDot}/> Live</div>
-          <div style={S.avatar}>{initials}</div>
-        </div>
-      </header>
-
       <div style={S.content}>
-        {/* ── KPI ROW ── */}
+        {/* ── HERO ── */}
+        <section style={S.hero}>
+          <span style={S.heroGlow}/>
+          <div style={S.heroLeft}>
+            <div style={S.heroEyebrow}>{greetingByHour()}, {currentUser || "team"}</div>
+            <h1 style={S.heroTitle}>Operations overview</h1>
+            <div style={S.heroSub}>
+              Infrastructure health, alerting, and recurring reporting across the Pelindo workspace.
+            </div>
+            <div style={S.heroActions}>
+              <button style={S.heroPrimary} onClick={() => navigate("generate-report")} disabled={!!runningReport}>
+                {runningReport
+                  ? <><span className="spinner" style={{width:11,height:11,borderWidth:1.6}}/> Running…</>
+                  : <><Icon name="play" size={12}/> Generate report</>}
+              </button>
+              <button style={S.heroGhost} onClick={() => navigate("alert-monitor")}>
+                <Icon name="alert" size={13}/> Open alert center
+              </button>
+            </div>
+          </div>
+          <div style={S.heroRight}>
+            <div style={S.heroLive}><span style={S.liveDot}/> Live monitoring</div>
+            <div style={S.heroClock}>{now} <span style={{color:"var(--muted3)",fontSize:10}}>WIB</span></div>
+            <div style={S.heroMeta}>
+              {activeAlerts.length} active alert{activeAlerts.length === 1 ? "" : "s"} · {ticketsToday} ticket{ticketsToday === 1 ? "" : "s"} today
+            </div>
+          </div>
+        </section>
+
+        {/* ── KPI GRID ── */}
         <div style={S.kpiRow}>
-          <div style={S.kpiCard} onClick={() => navigate("alert-monitor")}>
-            <div style={{...S.kpiIcon, background:"rgba(59,130,246,.13)", color:"#3B82F6"}}>🔔</div>
-            <div>
-              <div style={S.kpiLabel}>Active Alerts</div>
-              <div style={S.kpiVal}>{alertsError ? "—" : activeAlerts.length}</div>
-              <div style={{...S.kpiTrend, color: critical>0 ? "var(--red)" : "var(--green)"}}>
-                {critical>0 ? `↑ ${critical} critical` : "↓ all clear"}
-              </div>
+          <button style={S.kpiCard} onClick={() => navigate("alert-monitor")}>
+            <div style={S.kpiTop}>
+              <span style={{...S.kpiIcon, color:"var(--red)", background:"var(--red-dim)"}}>
+                <Icon name="bell" size={18}/>
+              </span>
+              <Icon name="chevronRight" size={14} style={S.kpiArrow}/>
+            </div>
+            <div style={S.kpiVal}>{alertsError ? "—" : activeAlerts.length}</div>
+            <div style={S.kpiLabel}>Active alerts</div>
+            <div style={{...S.kpiTrend, color: critical>0 ? "var(--red)" : "var(--green)"}}>
+              {critical>0 ? `${critical} critical` : "All clear"}
+            </div>
+          </button>
+
+          <div style={{...S.kpiCard, cursor:"default"}}>
+            <div style={S.kpiTop}>
+              <span style={{...S.kpiIcon, color:"var(--green)", background:"var(--green-dim)"}}>
+                <Icon name="shield" size={18}/>
+              </span>
+            </div>
+            <div style={S.kpiVal}>{servicesHealthy}</div>
+            <div style={S.kpiLabel}>Healthy services</div>
+            <div style={{...S.kpiTrend, color: dailySummary.health === "CRITICAL" ? "var(--red)" : "var(--green)"}}>
+              {dailySummary.health === "HEALTHY" ? "All systems normal" : dailySummary.health || "No data yet"}
             </div>
           </div>
 
-          <div style={S.kpiCard}>
-            <div style={{...S.kpiIcon, background:"rgba(34,197,94,.13)", color:"#22C55E"}}>✓</div>
-            <div>
-              <div style={S.kpiLabel}>Healthy Services</div>
-              <div style={S.kpiVal}>{servicesHealthy}</div>
-              <div style={{...S.kpiTrend, color:"var(--green)"}}>
-                {dailySummary.health === "HEALTHY" ? "↑ all systems normal" : dailySummary.health ? `⚠ ${dailySummary.health}` : "— no data yet"}
-              </div>
+          <button style={S.kpiCard} onClick={() => navigate("daily-task")}>
+            <div style={S.kpiTop}>
+              <span style={{...S.kpiIcon, color:"var(--blue)", background:"var(--blue-dim)"}}>
+                <Icon name="report" size={18}/>
+              </span>
+              <Icon name="chevronRight" size={14} style={S.kpiArrow}/>
             </div>
-          </div>
+            <div style={S.kpiVal}>{dailyOk===null ? "Pending" : dailyOk ? "Completed" : "Failed"}</div>
+            <div style={S.kpiLabel}>Today's report</div>
+            <div style={S.kpiTrend}>
+              {lastDailyRun ? `Updated ${new Date(lastDailyRun.last_run).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}` : "No run yet"}
+            </div>
+          </button>
 
-          <div style={S.kpiCard} onClick={() => navigate("daily-task")}>
-            <div style={{...S.kpiIcon, background:"rgba(139,92,246,.14)", color:"#8B5CF6"}}>🗒</div>
-            <div>
-              <div style={S.kpiLabel}>Today's Report</div>
-              <div style={{...S.kpiVal, fontSize:16}}>{dailyOk===null ? "Pending" : dailyOk ? "Completed" : "Failed"}</div>
-              <div style={S.kpiTrend}>
-                {lastDailyRun ? `Last update ${new Date(lastDailyRun.last_run).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}` : "No run yet"}
-                {dailyOk && " ✓"}
-              </div>
+          <button style={S.kpiCard} onClick={() => navigate("daily-task")}>
+            <div style={S.kpiTop}>
+              <span style={{...S.kpiIcon, color:"var(--amber)", background:"var(--amber-dim)"}}>
+                <Icon name="ticket" size={18}/>
+              </span>
+              <Icon name="chevronRight" size={14} style={S.kpiArrow}/>
             </div>
-          </div>
-
-          <div style={S.kpiCard} onClick={() => navigate("generate-report")}>
-            <div style={{...S.kpiIcon, background:"rgba(245,158,11,.14)", color:"#F59E0B"}}>📄</div>
-            <div>
-              <div style={S.kpiLabel}>Weekly Reports</div>
-              <div style={S.kpiVal}>{weeklyAvailable}+</div>
-              <div style={S.kpiTrend}>Available types</div>
-            </div>
-          </div>
+            <div style={S.kpiVal}>{ticketsToday}</div>
+            <div style={S.kpiLabel}>Tickets today</div>
+            <div style={S.kpiTrend}>{ticketsClosed} closed overall</div>
+          </button>
         </div>
 
-        {/* ── MIDDLE ROW: Grafana Alerts + Daily Report ── */}
-        <div style={S.midRow}>
-          {/* Grafana Alerts */}
+        {/* ── BENTO: alerts + daily report ── */}
+        <div style={S.bentoWide}>
           <div style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
-                <span style={{fontSize:16}}>🟠</span>
-                <span style={S.cardTitle}>Grafana Alerts</span>
+                <span style={{...S.cardIcon, color:"var(--red)"}}><Icon name="alert" size={15}/></span>
+                <span style={S.cardTitle}>Grafana alerts</span>
               </div>
-              <button style={S.viewAllLink} onClick={() => navigate("alert-monitor")}>View All →</button>
+              <button style={S.viewAllLink} onClick={() => navigate("alert-monitor")}>
+                View all <Icon name="arrowRight" size={12}/>
+              </button>
             </div>
 
             {alertsError ? (
-              <div style={S.emptyState}>⚠ {alertsError}</div>
+              <div style={S.emptyState}><Icon name="warning" size={14}/> {alertsError}</div>
             ) : (
-              <div style={{display:"flex", alignItems:"center", gap:20}}>
+              <div style={S.alertBody}>
                 <AlertDonut critical={critical} warning={warning} info={info}/>
-                <div style={{flex:1, display:"flex", flexDirection:"column", gap:8}}>
-                  <div style={S.legendRow}>
-                    <span style={{...S.legendDot, background:"#EF4444"}}/>
-                    <span style={S.legendLabel}>Critical</span>
-                    <span style={S.legendVal}>{critical}</span>
-                  </div>
-                  <div style={S.legendRow}>
-                    <span style={{...S.legendDot, background:"#F59E0B"}}/>
-                    <span style={S.legendLabel}>Warning</span>
-                    <span style={S.legendVal}>{warning}</span>
-                  </div>
-                  <div style={S.legendRow}>
-                    <span style={{...S.legendDot, background:"#3B82F6"}}/>
-                    <span style={S.legendLabel}>Info</span>
-                    <span style={S.legendVal}>{info}</span>
-                  </div>
+                <div style={S.legend}>
+                  {[
+                    {label:"Critical", val:critical, color:"var(--red)"},
+                    {label:"Warning",  val:warning,  color:"var(--amber)"},
+                    {label:"Info",     val:info,     color:"var(--blue)"},
+                  ].map(l => (
+                    <div key={l.label} style={S.legendRow}>
+                      <span style={{...S.legendDot, background:l.color}}/>
+                      <span style={S.legendLabel}>{l.label}</span>
+                      <span style={S.legendVal}>{l.val}</span>
+                    </div>
+                  ))}
                 </div>
-                <div style={{flex:1.3, display:"flex", flexDirection:"column", gap:6, borderLeft:"1px solid var(--border)", paddingLeft:16}}>
+                <div style={S.latest}>
+                  <div style={S.listLabel}>LATEST</div>
                   {activeAlerts.length === 0 ? (
                     <div style={S.emptyState}>No active alerts</div>
-                  ) : activeAlerts.slice(0,3).map((a, i) => (
+                  ) : activeAlerts.slice(0,4).map((a, i) => (
                     <div key={i} style={S.alertRow}>
-                      <span style={{...S.alertDot, background: a.severity==="critical"?"#EF4444":a.severity==="warning"?"#F59E0B":"#3B82F6"}}/>
+                      <span style={{...S.alertDot, background: a.severity==="critical"?"var(--red)":a.severity==="warning"?"var(--amber)":"var(--blue)"}}/>
                       <span style={S.alertName} title={a.name}>{a.name}</span>
-                      <span style={S.alertTime}>{timeAgo(a.active_at)} ›</span>
+                      <span style={S.alertTime}>{timeAgo(a.active_at)}</span>
                     </div>
                   ))}
                 </div>
@@ -286,67 +348,127 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
             )}
           </div>
 
-          {/* Daily Report */}
           <div style={S.card}>
             <div style={S.cardHead}>
               <div style={S.cardTitleRow}>
-                <span style={{fontSize:16}}>📘</span>
-                <span style={S.cardTitle}>Daily Report</span>
+                <span style={{...S.cardIcon, color:"var(--blue)"}}><Icon name="report" size={15}/></span>
+                <span style={S.cardTitle}>Daily report</span>
               </div>
-              <button style={S.viewAllLink} onClick={() => navigate("daily-task")}>View Detail →</button>
+              <button style={S.viewAllLink} onClick={() => navigate("daily-task")}>
+                Details <Icon name="arrowRight" size={12}/>
+              </button>
             </div>
-            <div style={{display:"flex", flexDirection:"column", alignItems:"center", gap:8, padding:"8px 0"}}>
-              <div style={{...S.statusCircle, background: dailyOk===false ? "var(--red-dim)" : "var(--green-dim)",
-                color: dailyOk===false ? "var(--red)" : "var(--green)"}}>
-                <span style={{fontSize:28}}>{dailyOk===false ? "✕" : "✓"}</span>
+            <div style={S.dailyBody}>
+              <div style={{...S.statusCircle,
+                background: dailyOk===false ? "var(--red-dim)" : dailyOk ? "var(--green-dim)" : "var(--surface2)",
+                color: dailyOk===false ? "var(--red)" : dailyOk ? "var(--green)" : "var(--muted)"}}>
+                <Icon name={dailyOk===false ? "xCircle" : dailyOk ? "checkCircle" : "clock"} size={28}/>
               </div>
-              <div style={{fontWeight:700, fontSize:14, color: dailyOk===false ? "var(--red)" : "var(--green)"}}>
-                {dailyOk===null ? "No Report Yet" : dailyOk ? "Report Completed" : "Report Failed"}
+              <div style={{fontWeight:600, fontSize:14, color: dailyOk===false ? "var(--red)" : dailyOk ? "var(--text)" : "var(--muted)"}}>
+                {dailyOk===null ? "No report yet" : dailyOk ? "Report completed" : "Report failed"}
               </div>
-              <div style={{fontSize:11, color:"var(--muted2)"}}>
+              <div style={{fontSize:11.5, color:"var(--muted)", textAlign:"center", lineHeight:1.6}}>
                 {lastDailyRun
-                  ? `Today, ${new Date(lastDailyRun.last_run).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})} • ${new Date(lastDailyRun.last_run).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})} WIB`
+                  ? `${new Date(lastDailyRun.last_run).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})} · ${new Date(lastDailyRun.last_run).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})} WIB`
                   : "Run Daily Backup Status to generate"}
               </div>
               <button style={S.downloadBtn} onClick={() => navigate("daily-task")}>
-                ↓ Download Report
+                <Icon name="download" size={13}/> Download report
               </button>
             </div>
           </div>
         </div>
 
-        {/* ── WEEKLY REPORTS ── */}
-        <div style={S.weeklyCard}>
-          <div style={S.cardHead}>
-            <div style={S.cardTitleRow}>
-              <span style={{fontSize:16}}>📊</span>
-              <div>
-                <div style={S.cardTitle}>Weekly Reports</div>
-                <div style={{fontSize:10.5, color:"var(--muted2)", marginTop:1}}>Generate and download your weekly reports</div>
+        {/* ── BENTO: workspace + recent deliverables ── */}
+        <div style={S.bentoWide}>
+          <div style={S.card}>
+            <div style={S.cardHead}>
+              <div style={S.cardTitleRow}>
+                <span style={{...S.cardIcon, color:"var(--amber)"}}><Icon name="layers" size={15}/></span>
+                <div>
+                  <div style={S.cardTitle}>Reporting workspace</div>
+                  <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>Generate, retrieve, and share recurring deliverables.</div>
+                </div>
               </div>
+              <button style={S.genReportBtn} onClick={() => navigate("generate-report")} disabled={!!runningReport}>
+                {runningReport
+                  ? <><span className="spinner" style={{width:11,height:11,borderWidth:1.6}}/> Running…</>
+                  : <><Icon name="play" size={12}/> Generate report</>}
+              </button>
             </div>
-            <button style={S.genReportBtn} onClick={() => navigate("generate-report")}
-              disabled={!!runningReport}>
-              {runningReport ? "⏳ Running…" : "▶ Generate Report"}
-            </button>
+
+            <div style={S.weeklyGrid}>
+              {weeklyShortcuts.map(w => (
+                <button key={w.id} style={{...S.weeklyTile, ...(w.kind==="soon" ? S.weeklyTileDisabled : {})}}
+                  disabled={w.kind==="soon"}
+                  onClick={() => {
+                    if (w.kind === "run") runReport(w.automation);
+                    else if (w.kind === "info") navigate("daily-task");
+                  }}>
+                  <span style={S.weeklyIcon}><Icon name={w.icon} size={17}/></span>
+                  <span style={{flex:1, minWidth:0, textAlign:"left"}}>
+                    <span style={S.weeklyLabel}>{w.label}</span>
+                    {w.kind === "soon" && <span style={S.soonTag}>Coming soon</span>}
+                    {w.kind === "info" && <span style={S.infoTag}>{w.value}</span>}
+                  </span>
+                  {w.kind !== "soon" && <Icon name="chevronRight" size={13} style={{color:"var(--muted3)"}}/>}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div style={S.weeklyGrid}>
-            {weeklyShortcuts.map(w => (
-              <div key={w.id} style={{...S.weeklyTile, ...(w.kind==="soon" ? S.weeklyTileDisabled : {})}}
-                onClick={() => {
-                  if (w.kind === "run") runReport(w.automation);
-                  else if (w.kind === "info") navigate("daily-task");
-                }}>
-                <div style={S.weeklyIcon}>{w.icon}</div>
-                <div style={{flex:1, minWidth:0}}>
-                  <div style={S.weeklyLabel}>{w.label.split("\n").map((l,i)=><div key={i}>{l}</div>)}</div>
-                  {w.kind === "soon" && <div style={S.soonTag}>Coming Soon</div>}
-                  {w.kind === "info" && <div style={S.infoTag}>{w.value}</div>}
+          <div style={S.card}>
+            <div style={S.cardHead}>
+              <div style={S.cardTitleRow}>
+                <span style={{...S.cardIcon, color:"var(--red)"}}><Icon name="alert" size={15}/></span>
+                <div>
+                  <div style={S.cardTitle}>Top alert incidents</div>
+                  <div style={{fontSize:11, color:"var(--muted)", marginTop:2}}>
+                    Last 30 days · {incidentTotal} incident{incidentTotal === 1 ? "" : "s"} from alert tickets
+                  </div>
                 </div>
-                {w.kind !== "soon" && <span style={S.weeklyArrow}>›</span>}
               </div>
-            ))}
+              <button style={S.viewAllLink} onClick={() => navigate("alert-monitor")}>
+                Alerts <Icon name="arrowRight" size={12}/>
+              </button>
+            </div>
+            {topIncidents.length === 0 ? (
+              <div style={S.emptyState}>No alert incidents in the last 30 days</div>
+            ) : (
+              <div style={S.incidentList}>
+                {topIncidents.map((it, i) => (
+                  <div key={`${it.name}||${it.resource}`} style={S.incidentRow}
+                    title={`${it.name}${it.resource ? ` · ${it.resource}` : ""}${it.ticket ? `\nTicket: ${it.ticket}` : ""}${it.folder ? `\nFolder: ${it.folder}` : ""}\nOccurrences: ${it.count} · last seen ${timeAgo(it.lastSeen)}`}>
+                    <span style={{...S.incidentRank, color: i === 0 ? "var(--accent)" : "var(--muted3)"}}>
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={{display:"flex", alignItems:"center", gap:7, minWidth:0}}>
+                        <span style={S.incidentName}>{it.name}</span>
+                        {it.severity && (
+                          <span style={{...S.severityBadge, ...severityStyle(it.severity)}}>
+                            {it.severity}
+                          </span>
+                        )}
+                      </div>
+                      <div style={S.incidentMeta}>
+                        {it.resource && <span style={S.incidentResource} title={it.resource}>{it.resource}</span>}
+                        {it.folder && <span style={S.incidentMetaItem}>{it.folder}</span>}
+                        {it.ticket && <span style={S.incidentTicket}>{it.ticket}</span>}
+                      </div>
+                      <div style={S.incidentBarTrack}>
+                        <div style={{...S.incidentBarFill, width:`${Math.max(6, (it.count / maxIncidentCount) * 100)}%`,
+                          background: i === 0 ? "var(--accent)" : "var(--muted3)"}}/>
+                      </div>
+                    </div>
+                    <div style={{textAlign:"right", flexShrink:0}}>
+                      <span style={S.incidentCount}>{it.count}<span style={S.incidentUnit}>×</span></span>
+                      <div style={S.incidentLast}>{timeAgo(it.lastSeen)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -354,81 +476,126 @@ export default function Dashboard({ customers, navigate, currentUser, darkMode, 
   );
 }
 
-/* ══════════════════════════════════════════════════════════
-   STYLES — theme-aware (light/dark) via global CSS variables
-══════════════════════════════════════════════════════════ */
 const S = {
   root:   {height:"100%", display:"flex", flexDirection:"column", overflow:"hidden",
-           background:"var(--bg)", fontFamily:"'Inter',system-ui,sans-serif", color:"var(--text)"},
+           background:"var(--bg)", fontFamily:"var(--font)", color:"var(--text)"},
+  content:{flex:1, overflowY:"auto", padding:"22px 26px 36px", minHeight:0},
 
-  topbar: {display:"flex", alignItems:"flex-start", justifyContent:"space-between",
-           padding:"20px 24px 16px", flexShrink:0},
-  greetSmall: {fontSize:12.5, color:"var(--muted)", fontWeight:500},
-  greetTitle:{fontSize:24, fontWeight:800, letterSpacing:"-.02em", color:"var(--text)", marginTop:2},
-  greetSub:  {fontSize:12, color:"var(--muted2)", marginTop:4},
-  topbarRight:{display:"flex", alignItems:"center", gap:14, marginTop:4},
-  clockBlock:{display:"flex", alignItems:"center", gap:6, fontSize:12, color:"var(--text4)", fontWeight:500},
-  clockIcon: {fontSize:13},
-  liveBadge: {display:"flex", alignItems:"center", gap:6, fontSize:11.5, fontWeight:600, color:"var(--green)"},
-  liveDot:   {width:7, height:7, borderRadius:"50%", background:"var(--green)", boxShadow:"0 0 0 3px var(--green-dim)"},
-  avatar:    {width:32, height:32, borderRadius:"50%", background:"var(--maroon)", color:"#fff",
-              fontSize:13, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center"},
+  hero:  {position:"relative", overflow:"hidden", display:"flex", alignItems:"flex-end",
+          justifyContent:"space-between", gap:24, flexWrap:"wrap",
+          background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:14,
+          padding:"26px 28px", marginBottom:16, boxShadow:"var(--shadow-card)"},
+  heroGlow:{position:"absolute", inset:0, pointerEvents:"none",
+          background:"radial-gradient(620px 180px at 100% 0%, var(--accent-soft), transparent 72%)"},
+  heroLeft:{position:"relative", minWidth:0},
+  heroEyebrow:{fontSize:11.5, fontWeight:600, color:"var(--muted)", letterSpacing:".01em"},
+  heroTitle:{fontSize:26, fontWeight:700, letterSpacing:"-.035em", color:"var(--text)", marginTop:5, lineHeight:1.15},
+  heroSub:{fontSize:12.5, color:"var(--muted)", marginTop:7, maxWidth:620, lineHeight:1.6},
+  heroActions:{display:"flex", gap:9, marginTop:18, flexWrap:"wrap"},
+  heroPrimary:{display:"inline-flex", alignItems:"center", gap:6, background:"var(--accent)", color:"#fff",
+          border:"none", fontFamily:"inherit", fontSize:12, fontWeight:600, padding:"9px 16px",
+          borderRadius:7, cursor:"pointer"},
+  heroGhost:{display:"inline-flex", alignItems:"center", gap:6, background:"var(--surface2)",
+          border:"1px solid var(--border2)", color:"var(--text4)", fontFamily:"inherit",
+          fontSize:12, fontWeight:500, padding:"9px 16px", borderRadius:7, cursor:"pointer"},
+  heroRight:{position:"relative", textAlign:"right", minWidth:180},
+  heroLive:{display:"inline-flex", alignItems:"center", gap:7, fontSize:11.5, fontWeight:600, color:"var(--green)"},
+  heroClock:{fontSize:15, fontWeight:650, color:"var(--text2)", marginTop:8, fontFamily:"var(--mono)", letterSpacing:"-.01em"},
+  heroMeta:{fontSize:11, color:"var(--muted)", marginTop:4},
+  liveDot:{width:7, height:7, borderRadius:"50%", background:"var(--green)", boxShadow:"0 0 0 3px var(--green-dim)"},
 
-  content: {flex:1, overflowY:"auto", padding:"4px 24px 24px", minHeight:0},
+  kpiRow:{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:14, marginBottom:16},
+  kpiCard:{display:"flex", flexDirection:"column", gap:2, background:"var(--bg2)",
+          border:"1px solid var(--border)", borderRadius:12, padding:"16px 18px",
+          cursor:"pointer", textAlign:"left", fontFamily:"inherit", color:"inherit",
+          boxShadow:"var(--shadow-card)", transition:"border-color .15s, box-shadow .15s"},
+  kpiTop:{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12},
+  kpiIcon:{width:36, height:36, borderRadius:9, display:"flex", alignItems:"center",
+          justifyContent:"center", flexShrink:0},
+  kpiArrow:{color:"var(--muted3)", flexShrink:0},
+  kpiVal:{fontSize:24, fontWeight:700, color:"var(--text)", letterSpacing:"-.035em", lineHeight:1.15},
+  kpiLabel:{fontSize:11.5, color:"var(--muted)", fontWeight:500, marginTop:1},
+  kpiTrend:{fontSize:10.5, color:"var(--muted)", marginTop:5, whiteSpace:"nowrap",
+          overflow:"hidden", textOverflow:"ellipsis"},
 
-  kpiRow: {display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:16, marginBottom:16},
-  kpiCard:{background:"var(--surface)", border:"1px solid var(--border)", borderRadius:14, padding:"16px 18px",
-           display:"flex", alignItems:"center", gap:12, cursor:"pointer",
-           boxShadow:"var(--shadow-card)"},
-  kpiIcon:{width:42, height:42, borderRadius:11, display:"flex", alignItems:"center",
-           justifyContent:"center", fontSize:18, flexShrink:0},
-  kpiLabel:{fontSize:11.5, color:"var(--muted)", fontWeight:500},
-  kpiVal:  {fontSize:21, fontWeight:800, color:"var(--text)", letterSpacing:"-.02em", marginTop:1},
-  kpiTrend:{fontSize:10.5, color:"var(--green)", marginTop:2, whiteSpace:"nowrap"},
+  bentoWide:{display:"grid", gridTemplateColumns:"1.5fr 1fr", gap:16, marginBottom:16},
+  card:   {background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:12, padding:"18px 20px",
+          boxShadow:"var(--shadow-card)", minWidth:0},
+  cardHead:{display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:16},
+  cardTitleRow:{display:"flex", alignItems:"center", gap:9, minWidth:0},
+  cardIcon:{display:"flex", alignItems:"center", justifyContent:"center"},
+  cardTitle:{fontSize:13.5, fontWeight:650, color:"var(--text)", whiteSpace:"nowrap"},
+  viewAllLink:{display:"inline-flex",alignItems:"center",gap:4,background:"none", border:"none",
+          color:"var(--text4)", fontSize:11.5, fontWeight:500, cursor:"pointer", fontFamily:"inherit",
+          whiteSpace:"nowrap"},
+  listLabel:{fontSize:9, fontWeight:700, letterSpacing:".1em", color:"var(--muted3)", marginBottom:6},
 
-  midRow: {display:"grid", gridTemplateColumns:"1.3fr 1fr", gap:16, marginBottom:16},
-  card:   {background:"var(--surface)", border:"1px solid var(--border)", borderRadius:14, padding:"18px 20px",
-           boxShadow:"var(--shadow-card)"},
-  cardHead:{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16},
-  cardTitleRow:{display:"flex", alignItems:"center", gap:8},
-  cardTitle:{fontSize:14, fontWeight:700, color:"var(--text)"},
-  viewAllLink:{background:"none", border:"none", color:"var(--accent)", fontSize:11.5, fontWeight:600,
-           cursor:"pointer", fontFamily:"inherit"},
-
-  legendRow:{display:"flex", alignItems:"center", gap:7},
-  legendDot:{width:8, height:8, borderRadius:"50%", flexShrink:0},
+  alertBody:{display:"flex", alignItems:"center", gap:20},
+  legend:{flex:1, display:"flex", flexDirection:"column", gap:9, minWidth:110},
+  legendRow:{display:"flex", alignItems:"center", gap:8},
+  legendDot:{width:7, height:7, borderRadius:"50%", flexShrink:0},
   legendLabel:{fontSize:11.5, color:"var(--text4)", flex:1},
-  legendVal:{fontSize:12, fontWeight:700, color:"var(--text)"},
-
-  alertRow:{display:"flex", alignItems:"center", gap:8, padding:"4px 0", cursor:"pointer"},
+  legendVal:{fontSize:12, fontWeight:600, color:"var(--text)"},
+  latest:{flex:1.5, display:"flex", flexDirection:"column", gap:2,
+          borderLeft:"1px solid var(--border)", paddingLeft:20, minHeight:110, minWidth:0},
+  alertRow:{display:"flex", alignItems:"center", gap:8, padding:"6px 0",
+          borderBottom:"1px solid var(--border)"},
   alertDot:{width:6, height:6, borderRadius:"50%", flexShrink:0},
-  alertName:{fontSize:11.5, color:"var(--text2)", flex:1, minWidth:0, overflow:"hidden",
-           textOverflow:"ellipsis", whiteSpace:"nowrap"},
-  alertTime:{fontSize:10, color:"var(--muted3)", flexShrink:0, whiteSpace:"nowrap"},
+  alertName:{fontSize:11.5, color:"var(--text3)", flex:1, minWidth:0, overflow:"hidden",
+          textOverflow:"ellipsis", whiteSpace:"nowrap"},
+  alertTime:{fontSize:9.5, color:"var(--muted3)", flexShrink:0, whiteSpace:"nowrap"},
 
-  statusCircle:{width:56, height:56, borderRadius:"50%", display:"flex", alignItems:"center",
-           justifyContent:"center", color:"var(--green)"},
-  downloadBtn:{marginTop:8, background:"var(--surface)", border:"1.5px solid var(--accent)", color:"var(--accent)",
-           fontFamily:"inherit", fontSize:11.5, fontWeight:600, padding:"8px 18px",
-           borderRadius:20, cursor:"pointer"},
+  dailyBody:{display:"flex", flexDirection:"column", alignItems:"center", gap:10, padding:"12px 0 4px"},
+  statusCircle:{width:58, height:58, borderRadius:"50%", display:"flex", alignItems:"center",
+          justifyContent:"center", color:"var(--green)"},
+  downloadBtn:{marginTop:4, display:"inline-flex", alignItems:"center", gap:6,
+          background:"var(--bg2)", border:"1px solid var(--border2)", color:"var(--text4)",
+          fontFamily:"inherit", fontSize:11.5, fontWeight:500, padding:"7px 16px",
+          borderRadius:7, cursor:"pointer"},
 
-  emptyState:{fontSize:11.5, color:"var(--muted3)", fontStyle:"italic", padding:"10px 0"},
+  emptyState:{display:"flex", alignItems:"center", gap:6, fontSize:11.5, color:"var(--muted3)", padding:"8px 0"},
 
-  weeklyCard:{background:"var(--surface)", border:"1px solid var(--border)", borderRadius:14, padding:"18px 20px",
-           boxShadow:"var(--shadow-card)"},
-  genReportBtn:{background:"var(--accent)", color:"#fff", border:"none", fontFamily:"inherit",
-           fontSize:12, fontWeight:600, padding:"9px 18px", borderRadius:20, cursor:"pointer",
-           display:"flex", alignItems:"center", gap:6, whiteSpace:"nowrap"},
+  genReportBtn:{display:"inline-flex", alignItems:"center", gap:6,
+          background:"var(--accent)", color:"#fff", border:"none", fontFamily:"inherit",
+          fontSize:11.5, fontWeight:600, padding:"8px 16px", borderRadius:7, cursor:"pointer",
+          whiteSpace:"nowrap"},
 
-  weeklyGrid:{display:"grid", gridTemplateColumns:"repeat(6,1fr)", gap:12},
-  weeklyTile:{background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:11, padding:"14px 12px",
-           display:"flex", flexDirection:"column", gap:10, cursor:"pointer", minHeight:84,
-           transition:"border-color .15s"},
+  weeklyGrid:{display:"grid", gridTemplateColumns:"repeat(2, 1fr)", gap:10},
+  weeklyTile:{display:"flex", alignItems:"center", gap:12, background:"var(--bg3)",
+          border:"1px solid var(--border)", borderRadius:9, padding:"12px 14px",
+          cursor:"pointer", minHeight:60, transition:"border-color .15s, background .15s",
+          fontFamily:"inherit", color:"inherit"},
   weeklyTileDisabled:{cursor:"default", opacity:.6},
-  weeklyIcon:{fontSize:18},
-  weeklyLabel:{fontSize:11.5, fontWeight:600, color:"var(--text2)", lineHeight:1.3},
-  weeklyArrow:{alignSelf:"flex-end", color:"var(--muted3)", fontSize:14, marginTop:-18},
-  soonTag:{fontSize:9, fontWeight:700, color:"var(--muted2)", background:"var(--surface3)",
-           display:"inline-block", padding:"2px 6px", borderRadius:4, marginTop:4},
-  infoTag:{fontSize:9.5, fontWeight:700, color:"var(--accent)", marginTop:2},
+  weeklyIcon:{width:32, height:32, borderRadius:8, background:"var(--surface2)",
+          border:"1px solid var(--border)", display:"flex", alignItems:"center",
+          justifyContent:"center", color:"var(--text4)", flexShrink:0},
+  weeklyLabel:{display:"block",fontSize:11.5, fontWeight:550, color:"var(--text2)", lineHeight:1.3},
+  soonTag:{display:"inline-block",fontSize:9, fontWeight:600, color:"var(--muted3)",
+          background:"var(--surface3)", padding:"1px 6px", borderRadius:4, marginTop:4},
+  infoTag:{display:"block",fontSize:9.5, fontWeight:600, color:"var(--muted)", marginTop:3},
+
+  incidentList:{display:"flex", flexDirection:"column", gap:2},
+  incidentRow:{display:"flex", alignItems:"center", gap:12, padding:"9px 0",
+          borderBottom:"1px solid var(--border)"},
+  incidentRank:{fontSize:11, fontWeight:700, fontFamily:"var(--mono)", letterSpacing:".02em",
+          flexShrink:0, width:20},
+  incidentName:{fontSize:11.5, fontWeight:550, color:"var(--text2)",
+          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0},
+  severityBadge:{fontSize:8.5, fontWeight:700, letterSpacing:".05em", textTransform:"uppercase",
+          padding:"1px 6px", borderRadius:4, border:"1px solid transparent", flexShrink:0,
+          lineHeight:1.5},
+  incidentMeta:{display:"flex", alignItems:"center", gap:8, marginTop:2, minWidth:0,
+          overflow:"hidden", whiteSpace:"nowrap"},
+  incidentResource:{fontSize:9.5, fontFamily:"var(--mono)", color:"var(--text4)",
+          overflow:"hidden", textOverflow:"ellipsis", maxWidth:150},
+  incidentMetaItem:{fontSize:9.5, color:"var(--muted3)", overflow:"hidden",
+          textOverflow:"ellipsis", maxWidth:130},
+  incidentTicket:{fontSize:9, fontFamily:"var(--mono)", fontWeight:600, color:"var(--muted2)",
+          background:"var(--surface2)", border:"1px solid var(--border)", padding:"0 5px",
+          borderRadius:4, flexShrink:0},
+  incidentBarTrack:{marginTop:6, height:4, borderRadius:2, background:"var(--surface3)", overflow:"hidden"},
+  incidentBarFill:{height:"100%", borderRadius:2, transition:"width .4s"},
+  incidentCount:{fontSize:14, fontWeight:700, color:"var(--text)", letterSpacing:"-.02em"},
+  incidentUnit:{fontSize:9.5, color:"var(--muted2)", marginLeft:1},
+  incidentLast:{fontSize:9.5, color:"var(--muted3)", marginTop:1, whiteSpace:"nowrap"},
 };

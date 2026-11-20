@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import PageShell, { btn, btnPrimary, btnDanger, input, label, card, ErrorBox } from "../components/PageShell.jsx";
 import { clearSession } from "../api.js";
+import Icon from "../components/Icon.jsx";
 
 export default function SettingsPage({ darkMode, toggleDark, currentUser, currentRole, displayName }) {
   const [config, setConfig] = useState(null);
@@ -58,7 +59,7 @@ export default function SettingsPage({ darkMode, toggleDark, currentUser, curren
   };
 
   return (
-    <PageShell title="Settings" subtitle="Profile, security, and application configuration">
+    <PageShell icon="settings" title="Settings" subtitle="Profile, security, and application configuration">
       <ErrorBox message={error} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -75,10 +76,12 @@ export default function SettingsPage({ darkMode, toggleDark, currentUser, curren
             <div style={{ fontSize: 12, color: "var(--muted)" }}>
               Current theme: <strong style={{ color: "var(--text2)" }}>{darkMode ? "Dark" : "Light"}</strong>
             </div>
-            <button style={btn} onClick={toggleDark}>Switch to {darkMode ? "Light" : "Dark"}</button>
+            <button style={btn} onClick={toggleDark}>
+              <Icon name={darkMode ? "sun" : "moon"} size={12}/> Switch to {darkMode ? "light" : "dark"}
+            </button>
           </div>
           <div style={{ borderTop: "1px solid var(--border)", marginTop: 14, paddingTop: 14 }}>
-            <button style={btnDanger} onClick={signOut}>Sign out</button>
+            <button style={btnDanger} onClick={signOut}><Icon name="logout" size={12}/> Sign out</button>
           </div>
         </div>
       </div>
@@ -86,7 +89,7 @@ export default function SettingsPage({ darkMode, toggleDark, currentUser, curren
       <div style={{ ...card, marginBottom: 12 }}>
         <div style={sectionTitle}>Change password</div>
         {success && (
-          <div style={{ fontSize: 12, color: "#86efac", marginBottom: 10 }}>{success}</div>
+          <div style={{ fontSize: 12, color: "var(--green)", marginBottom: 10 }}>{success}</div>
         )}
         <form onSubmit={changePassword} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
           <div>

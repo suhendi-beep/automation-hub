@@ -17,11 +17,63 @@ import SettingsPage from "./pages/SettingsPage.jsx";
 import ReminderNotif from "./components/ReminderNotif.jsx";
 import AlertWatcher  from "./components/AlertWatcher.jsx";
 import OciModal from "./components/OciModal.jsx";
+import Icon from "./components/Icon.jsx";
 import { clearSession } from "./api.js";
 import "./styles.css";
 
 // Auto-logout after this many ms of no user activity (mouse/keyboard/click/scroll).
 const IDLE_LOGOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+const PAGE_META = {
+  dashboard:           { group: "Monitoring",     label: "Dashboard" },
+  "alert-monitor":     { group: "Monitoring",     label: "Grafana Alerts" },
+  "daily-task":        { group: "Workflow",       label: "Tickets" },
+  "generate-report":   { group: "Workflow",       label: "Weekly Reports" },
+  files:               { group: "Workflow",       label: "Report History" },
+  customer:            { group: "Workflow",       label: "Automation Jobs" },
+  "engineer-activity": { group: "Insights",       label: "Engineer Activity" },
+  "logs-page":         { group: "Insights",       label: "Activity Logs" },
+  schedules:           { group: "Platform",       label: "Schedules" },
+  grafana:             { group: "Platform",       label: "Grafana Dashboards" },
+  customers:           { group: "Administration", label: "Customers" },
+  accounts:            { group: "Administration", label: "Accounts" },
+  credentials:         { group: "Administration", label: "Credentials" },
+  settings:            { group: "Administration", label: "Settings" },
+};
+
+const NAV_GROUPS = [
+  { section: "Monitoring", items: [
+    { key: "dashboard",       icon: "dashboard", label: "Dashboard" },
+    { key: "alert-monitor",   icon: "alert",     label: "Grafana Alerts" },
+  ]},
+  { section: "Workflow", items: [
+    { key: "daily-task",      icon: "ticket",    label: "Tickets" },
+    { key: "generate-report", icon: "report",    label: "Weekly Reports" },
+    { key: "files",           icon: "history",   label: "Report History" },
+  ]},
+  { section: "Insights", items: [
+    { key: "engineer-activity", icon: "activity", label: "Engineer Activity" },
+    { key: "logs-page",         icon: "logs",     label: "Activity Logs" },
+  ]},
+  { section: "Platform", items: [
+    { key: "schedules", icon: "schedule", label: "Schedules" },
+    { key: "grafana",   icon: "grafana",  label: "Dashboards" },
+  ]},
+  { section: "Administration", items: [
+    { key: "customers",   icon: "users",    label: "Customers" },
+    { key: "accounts",    icon: "accounts", label: "Accounts" },
+    { key: "credentials", icon: "key",      label: "Credentials" },
+    { key: "settings",    icon: "settings", label: "Settings" },
+  ]},
+];
+
+function fmtClock() {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    weekday: "short", day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit",
+  }).format(new Date()).replace(",", "");
+}
 
 export default function App() {
   // ── One-time cleanup of old localStorage keys (task data now lives in backend) ──
@@ -30,8 +82,8 @@ export default function App() {
       "portal_report_daily_tasks",
       "pr_tasks_migrated",
       "pr_daily_tasks",
-      // JANGAN hapus: pr_alert_tickets, pr_alert_task_ids, pr_alert_ticket_cooldown
-      // karena masih dipakai untuk tracking nomor ticket alert
+      // Keep pr_alert_tickets, pr_alert_task_ids, pr_alert_ticket_cooldown:
+      // they still track alert ticket numbers.
     ];
     KEYS_TO_CLEAR.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
   }, []);
@@ -49,8 +101,7 @@ export default function App() {
   const [fullCust, setFullCust] = useState(null);
   const [darkMode, setDarkMode] = useState(() => {
     try {
-      // One-time reset: every page now shares the same theme, defaulting to
-      // the light "Portal Report" look. User choice is kept after this.
+      // One-time reset: every page shares one theme, defaulting to light.
       if (localStorage.getItem("pr_theme_v") !== "v2") {
         localStorage.setItem("pr_theme", "light");
         localStorage.setItem("pr_theme_v", "v2");
@@ -61,6 +112,15 @@ export default function App() {
   const currentUser = sessionStorage.getItem("pr_user")    || "admin";
   const currentRole = sessionStorage.getItem("pr_role")    || "engineer";
   const displayName = sessionStorage.getItem("pr_display") || currentUser;
+
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem("pr_sidebar") === "1"; } catch { return false; }
+  });
+  const toggleCollapsed = () => setCollapsed((v) => {
+    const next = !v;
+    try { localStorage.setItem("pr_sidebar", next ? "1" : "0"); } catch {}
+    return next;
+  });
 
   // ── Idle auto-logout: no user activity for IDLE_LOGOUT_MS → sign out. ──
   React.useEffect(() => {
@@ -128,14 +188,23 @@ export default function App() {
 
   if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
 
+  const meta = PAGE_META[page] || PAGE_META.dashboard;
+
   return (
     <div style={{display:"flex",height:"100vh",overflow:"hidden",
-      background:"var(--bg)",fontFamily:"'Inter',system-ui,sans-serif"}}>
+      background:"var(--bg)",fontFamily:"var(--font)"}}>
       <Sidebar
         customers={customers} page={page} navigate={navigate}
         custId={custId} ociSess={ociSess} onOciChange={refreshOci}
-        running={running} currentUser={currentUser} displayName={displayName}
+        currentUser={currentUser} displayName={displayName}
         currentRole={currentRole} darkMode={darkMode} toggleDark={toggleDark}
+        collapsed={collapsed}
+      />
+      <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0}}>
+      <Topbar
+        meta={meta} ociSess={ociSess} navigate={navigate}
+        darkMode={darkMode} toggleDark={toggleDark}
+        collapsed={collapsed} onToggleCollapsed={toggleCollapsed}
       />
       <main style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minWidth:0}}>
         {page==="dashboard"       && <Dashboard customers={customers} navigate={navigate} currentUser={currentUser} darkMode={darkMode} toggleDark={toggleDark}/>}
@@ -153,20 +222,20 @@ export default function App() {
         {page==="logs-page" && <ActivityLogsPage/>}
         {page==="settings"  && <SettingsPage darkMode={darkMode} toggleDark={toggleDark} currentUser={currentUser} currentRole={currentRole} displayName={displayName}/>}
       </main>
+      </div>
       {/* Global reminder notifications — shown on all pages */}
       {authed && <ReminderNotif />}
-      {/* Global alert ringtone + new-alert toasts — active on every page,
-          not just while "Alert Monitor" is open */}
+      {/* Global alert ringtone + new-alert toasts — active on every page */}
       {authed && <AlertWatcher />}
     </div>
   );
 }
 
-function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, running, currentUser, displayName, currentRole, darkMode, toggleDark }) {
-  const [showOci,   setShowOci]   = useState(false);
-  const [expanded,  setExpanded]  = useState(null);
-  const runCount = Object.keys(running||{}).length;
-  const initials = (currentUser||"?").slice(0,2).toUpperCase();
+function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
+  currentUser, displayName, currentRole, darkMode, toggleDark, collapsed }) {
+  const [showOci, setShowOci] = useState(false);
+  const initials = (displayName || currentUser || "?").slice(0,2).toUpperCase();
+  const roleLabel = currentRole === "admin" ? "Administrator" : "Engineer";
 
   const signOut = () => {
     const u = sessionStorage.getItem("pr_user");
@@ -185,64 +254,92 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
     clearSession();
   };
 
+  const go = (key) => {
+    if (key === "files") navigate("files", custId || customers[0]?.id || "pelindo");
+    else navigate(key);
+  };
+
   return (
-    <aside style={{...SB.root, borderColor:"var(--sidebar-border)"}} className="app-sidebar">
-      {/* Logo */}
-      <div style={{...SB.logoWrap, borderColor:"var(--sidebar-border)"}}>
-        <div style={SB.logoMark}>
-          <HubIcon size={18}/>
-        </div>
-        <div>
-          <div style={SB.logoName}>Portal<br/>Report</div>
-        </div>
+    <aside style={{...SB.root, width: collapsed ? 74 : 252}} className="app-sidebar">
+      <div style={{...SB.brand, justifyContent: collapsed ? "center" : "flex-start"}}>
+        <img src="/ics-mark.svg" alt="ICS Compute" style={SB.logoMark}/>
+        {!collapsed && (
+          <div style={{minWidth:0}}>
+            <div style={SB.logoName}>Portal Report</div>
+            <div style={SB.logoSub}>ICS Compute</div>
+          </div>
+        )}
       </div>
 
-      {/* Main nav */}
-      <nav style={SB.nav}>
-        <NavItem icon={DashIcon}   label="Dashboard"       id="dashboard"       active={page==="dashboard"}       onClick={()=>navigate("dashboard")}/>
-        <NavItem icon={AlertIcon}  label="Grafana Alerts"  id="alert-monitor"   active={page==="alert-monitor"}   onClick={()=>navigate("alert-monitor")}/>
-        <NavItem icon={TaskIcon}   label="Tickets"         id="daily-task"      active={page==="daily-task"}      onClick={()=>navigate("daily-task")}/>
-        <NavItem icon={ReportIcon} label="Weekly Reports"   id="generate-report" active={page==="generate-report"} onClick={()=>navigate("generate-report")}/>
-        <NavItem icon={LogIcon}    label="Reports History"  id="files"           active={page==="files"}           onClick={()=>navigate("files", custId || customers[0]?.id || "pelindo")}/>
+      {!collapsed && (
+        <div style={SB.workspace}>
+          <div style={SB.wsLabel}>Workspace</div>
+          <div style={SB.wsName}>Pelindo Production</div>
+          <div style={SB.wsMeta}>
+            {Math.max(customers.length, 1)} environment{customers.length === 1 ? "" : "s"} · Asia/Jakarta
+          </div>
+        </div>
+      )}
 
-        <div style={SB.sectionLabel}>MORE</div>
-        <NavItem icon={ScheduleIcon} label="Schedules"      id="schedules"       active={page==="schedules"}       onClick={()=>navigate("schedules")}/>
-        <NavItem icon={SettingsIcon} label="Settings"       id="settings"        active={page==="settings"}        onClick={()=>navigate("settings")}/>
-        <NavItem icon={ActivityIcon} label="Engineer Activity" id="engineer-activity" active={page==="engineer-activity"} onClick={()=>navigate("engineer-activity")}/>
-        <NavItem icon={CustomerIcon}  label="Customers"         id="customers"   active={page==="customers"}   onClick={()=>navigate("customers")}/>
-        <NavItem icon={AccountIcon}   label="Accounts"          id="accounts"    active={page==="accounts"}    onClick={()=>navigate("accounts")}/>
-        <NavItem icon={GrafanaIcon}   label="Grafana Dashboards" id="grafana"     active={page==="grafana"}     onClick={()=>navigate("grafana")}/>
-        <NavItem icon={CredIcon}      label="Credentials"       id="credentials" active={page==="credentials"} onClick={()=>navigate("credentials")}/>
-        <NavItem icon={LogIcon}       label="Activity Logs"     id="logs-page"   active={page==="logs-page"}   onClick={()=>navigate("logs-page")}/>
+      <nav style={SB.nav}>
+        {NAV_GROUPS.map((g) => (
+          <div key={g.section}>
+            {!collapsed && <div style={SB.section}>{g.section}</div>}
+            {collapsed && <div style={SB.rule}/>}
+            {g.items.map((it) => (
+              <NavItem key={it.key} icon={it.icon} label={it.label}
+                active={page === it.key} collapsed={collapsed} onClick={() => go(it.key)}/>
+            ))}
+          </div>
+        ))}
       </nav>
 
-      {/* Theme toggle */}
-      <div style={{padding:"10px 12px", borderTop:"1px solid var(--sidebar-border)"}}>
-        <button onClick={toggleDark}
-          style={{width:"100%",display:"flex",alignItems:"center",gap:8,
-            background:"var(--surface2)",border:"1px solid var(--border2)",
-            borderRadius:7,padding:"7px 10px",cursor:"pointer",
-            fontFamily:"inherit",fontSize:11,color:"var(--muted)",transition:"all .2s"}}>
-          <span style={{fontSize:13}}>{darkMode ? "🌙" : "☀️"}</span>
-          <span style={{flex:1,textAlign:"left"}}>{darkMode ? "Dark Mode" : "Light Mode"}</span>
-          <span style={{fontSize:9,background:"rgba(177,18,38,.15)",color:"#B11226",
-            padding:"1px 6px",borderRadius:3,fontWeight:700}}>
-            {darkMode ? "ON" : "OFF"}
-          </span>
+      <div style={SB.footer}>
+        <button className="sb-foot-btn"
+          style={{...SB.ociBtn, ...(collapsed ? SB.ociBtnCollapsed : {})}}
+          onClick={() => setShowOci(true)} title="OCI session">
+          <span style={{...SB.ociDot,
+            background: ociSess?.logged_in ? "var(--green)" : "var(--side-muted)",
+            boxShadow: ociSess?.logged_in ? "0 0 0 3px var(--green-dim)" : "none"}}/>
+          {!collapsed && (
+            <>
+              <span style={{flex:1,minWidth:0}}>
+                <span style={SB.ociTitle}>OCI Console</span>
+                <span style={SB.ociSub}>
+                  {ociSess?.logged_in ? "Session connected" : "Not connected"}
+                </span>
+              </span>
+              <Icon name={ociSess?.logged_in ? "checkCircle" : "link"} size={14}
+                style={{color: ociSess?.logged_in ? "var(--green)" : "var(--side-muted)"}}/>
+            </>
+          )}
         </button>
-      </div>
 
-      {/* OCI status */}
-      <div style={{...SB.ociBar, borderColor:"var(--sidebar-border)"}} onClick={()=>setShowOci(true)}>
-        <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
-          background: ociSess?.logged_in ? "#22C55E" : "var(--muted2)",
-          boxShadow:  ociSess?.logged_in ? "0 0 8px #22C55E" : "none"}}/>
-        <span style={{flex:1,fontSize:10,color:"var(--muted)"}}>
-          {ociSess?.logged_in ? "OCI Connected" : "OCI Not Connected"}
-        </span>
-        <span style={{fontSize:9,color:"#B11226",fontWeight:600}}>
-          {ociSess?.logged_in ? "Manage" : "Connect →"}
-        </span>
+        <button className="sb-foot-btn" style={SB.themeBtn} onClick={toggleDark}
+          title={darkMode ? "Switch to light theme" : "Switch to dark theme"}>
+          <Icon name={darkMode ? "sun" : "moon"} size={15}/>
+          {!collapsed && (
+            <span style={{flex:1,textAlign:"left"}}>{darkMode ? "Light theme" : "Dark theme"}</span>
+          )}
+        </button>
+
+        {!collapsed ? (
+          <div style={SB.user}>
+            <span style={SB.avatar}>{initials}</span>
+            <span style={{flex:1,minWidth:0}}>
+              <span style={SB.userName}>{displayName || currentUser}</span>
+              <span style={SB.userRole}>{roleLabel}</span>
+            </span>
+            <button onClick={signOut} style={SB.signOut} title="Sign out">
+              <Icon name="logout" size={15}/>
+            </button>
+          </div>
+        ) : (
+          <button onClick={signOut} style={{...SB.avatar, alignSelf:"center", marginTop:6}}
+            title={`${displayName || currentUser} · ${roleLabel} — Sign out`}>
+            {initials}
+          </button>
+        )}
       </div>
 
       {showOci && (
@@ -254,69 +351,152 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange, runn
   );
 }
 
-function NavItem({ icon: Icon, label, id, active, onClick }) {
-  const [hov, setHov] = useState(false);
+function Topbar({ meta, ociSess, navigate,
+  darkMode, toggleDark, collapsed, onToggleCollapsed }) {
+  const [clock, setClock] = useState(fmtClock);
+
+  useEffect(() => {
+    const id = setInterval(() => setClock(fmtClock()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <header style={TB.root}>
+      <div style={{display:"flex",alignItems:"center",gap:12,minWidth:0}}>
+        <button className="tb-icon" style={TB.iconBtn} onClick={onToggleCollapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+          <Icon name={collapsed ? "chevronRight" : "chevronLeft"} size={16}/>
+        </button>
+        <div style={TB.crumbs}>
+          <span style={TB.crumbMuted}>Workspace</span>
+          <span style={TB.crumbSep}>/</span>
+          <span style={TB.crumbMuted}>{meta.group}</span>
+          <span style={TB.crumbSep}>/</span>
+          <span style={TB.crumbActive}>{meta.label}</span>
+        </div>
+      </div>
+
+      <div style={TB.right}>
+        <div style={TB.clock} title="Asia/Jakarta">
+          <Icon name="clock" size={13}/>
+          {clock}
+          <span style={{color:"var(--muted3)",fontSize:10}}>WIB</span>
+        </div>
+        <button className="tb-pill" style={TB.pill} onClick={()=>navigate("credentials")}
+          title="Manage OCI session">
+          <span style={{...TB.pillDot,
+            background: ociSess?.logged_in ? "var(--green)" : "var(--muted3)",
+            boxShadow: ociSess?.logged_in ? "0 0 0 3px var(--green-dim)" : "none"}}/>
+          OCI {ociSess?.logged_in ? "connected" : "offline"}
+        </button>
+        <button className="tb-icon" style={TB.iconBtn} onClick={toggleDark}
+          title={darkMode ? "Switch to light theme" : "Switch to dark theme"}>
+          <Icon name={darkMode ? "sun" : "moon"} size={15}/>
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function NavItem({ icon, label, active, collapsed, onClick }) {
   return (
     <button
-      style={{
-        ...SB.navBtn,
-        ...(active ? SB.navBtnActive : hov ? SB.navBtnHover : {}),
-      }}
+      className="sb-item"
+      style={{...SB.item, ...(active ? SB.itemActive : {}), ...(collapsed ? SB.itemCollapsed : {})}}
       onClick={onClick}
-      onMouseEnter={()=>setHov(true)}
-      onMouseLeave={()=>setHov(false)}>
-      <span style={{display:"flex",alignItems:"center",justifyContent:"center",
-        width:16,flexShrink:0,opacity: active?1:.5}}>
-        <Icon size={14}/>
+      title={collapsed ? label : undefined}
+      aria-current={active ? "page" : undefined}>
+      <span style={SB.itemIcon}>
+        <Icon name={icon} size={17} strokeWidth={active ? 2 : 1.75}/>
       </span>
-      <span style={{flex:1,textAlign:"left"}}>{label}</span>
+      {!collapsed && <span style={{flex:1,textAlign:"left"}}>{label}</span>}
+      {active && <span style={SB.itemMark}/>}
     </button>
   );
 }
 
 const SB = {
-  root:        {width:220,borderRight:"1px solid var(--sidebar-border)",
+  root:        {background:"var(--side-bg)",borderRight:"1px solid var(--side-border)",
                 display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden",
-                transition:"background .25s"},
-  logoWrap:    {display:"flex",alignItems:"center",gap:10,padding:"18px 16px 15px",
-                borderBottom:"1px solid var(--sidebar-border)"},
-  logoMark:    {width:34,height:34,borderRadius:9,background:"#B11226",
-                display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,
-                color:"#fff",boxShadow:"0 2px 10px rgba(177,18,38,.35)"},
-  logoName:    {fontSize:13,fontWeight:700,letterSpacing:"-.01em",color:"var(--text)",
-                lineHeight:1.2},
-  logoSub:     {fontSize:9,color:"var(--muted)",marginTop:1},
-  nav:         {flex:1,padding:"10px 10px",overflowY:"auto"},
-  sectionLabel:{fontSize:8,fontWeight:700,letterSpacing:".15em",color:"var(--muted3)",
-                padding:"16px 8px 6px",textTransform:"uppercase"},
-  navBtn:      {display:"flex",alignItems:"center",gap:10,width:"100%",background:"none",
-                border:"none",color:"var(--muted)",fontFamily:"inherit",fontSize:12,
-                fontWeight:500,padding:"9px 10px",borderRadius:8,cursor:"pointer",
-                textAlign:"left",transition:"all .12s"},
-  navBtnActive:{background:"#B11226",color:"#FFFFFF",boxShadow:"0 2px 10px rgba(177,18,38,.35)"},
-  navBtnHover: {background:"var(--surface2)",color:"var(--text4)"},
+                transition:"width .18s ease"},
+  brand:       {display:"flex",alignItems:"center",gap:11,padding:"17px 16px 14px"},
+  logoMark:    {width:34,height:34,borderRadius:9,display:"block",flexShrink:0},
+  logoName:    {fontSize:13.5,fontWeight:700,letterSpacing:"-.02em",color:"var(--side-strong)",
+                lineHeight:1.2,whiteSpace:"nowrap"},
+  logoSub:     {fontSize:10,color:"var(--side-muted)",marginTop:2,letterSpacing:".01em",
+                whiteSpace:"nowrap"},
 
-  ociBar:      {display:"flex",alignItems:"center",gap:7,padding:"9px 14px",
-                borderTop:"1px solid var(--sidebar-border)",cursor:"pointer"},
-  userRow:     {display:"flex",alignItems:"center",gap:9,padding:"10px 14px",
-                borderTop:"1px solid var(--sidebar-border)"},
-  userAvatar:  {width:30,height:30,borderRadius:"50%",background:"#B11226",
-                color:"#fff",fontSize:11,fontWeight:700,display:"flex",
-                alignItems:"center",justifyContent:"center",flexShrink:0},
+  workspace:   {margin:"0 12px 6px",padding:"11px 12px",borderRadius:9,
+                background:"var(--side-field)",border:"1px solid var(--side-border)"},
+  wsLabel:     {fontSize:9,fontWeight:650,letterSpacing:".12em",textTransform:"uppercase",
+                color:"var(--side-muted)"},
+  wsName:      {fontSize:12,fontWeight:600,color:"var(--side-strong)",marginTop:3,
+                whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+  wsMeta:      {fontSize:10,color:"var(--side-text)",marginTop:2,
+                whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+
+  nav:         {flex:1,padding:"4px 10px 10px",overflowY:"auto",overflowX:"hidden"},
+  section:     {fontSize:9,fontWeight:650,letterSpacing:".12em",color:"var(--side-muted)",
+                padding:"16px 10px 6px",textTransform:"uppercase",whiteSpace:"nowrap"},
+  rule:        {height:1,background:"var(--side-border)",margin:"9px 8px"},
+
+  item:        {position:"relative",display:"flex",alignItems:"center",gap:10,width:"100%",
+                background:"transparent",border:"none",fontFamily:"inherit",fontSize:12.5,
+                fontWeight:500,color:"var(--side-text)",padding:"8px 10px",borderRadius:7,
+                cursor:"pointer",textAlign:"left",transition:"background .13s, color .13s",
+                marginBottom:1},
+  itemActive:  {background:"var(--side-active)",color:"var(--side-strong)",fontWeight:600},
+  itemCollapsed:{justifyContent:"center",padding:"9px 0"},
+  itemIcon:    {display:"flex",alignItems:"center",justifyContent:"center",width:18,flexShrink:0},
+  itemMark:    {position:"absolute",left:0,top:"50%",transform:"translateY(-50%)",width:2.5,
+                height:16,borderRadius:2,background:"var(--accent)"},
+
+  footer:      {borderTop:"1px solid var(--side-border)",padding:"10px",
+                display:"flex",flexDirection:"column",gap:6},
+  ociBtn:      {display:"flex",alignItems:"center",gap:9,padding:"8px 10px",
+                border:"1px solid var(--side-border)",borderRadius:8,background:"transparent",
+                cursor:"pointer",fontFamily:"inherit",transition:"background .15s"},
+  ociBtnCollapsed:{justifyContent:"center",padding:"9px 0"},
+  ociDot:      {width:7,height:7,borderRadius:"50%",flexShrink:0,transition:"all .2s"},
+  ociTitle:    {display:"block",fontSize:11,fontWeight:600,color:"var(--side-strong)",lineHeight:1.3},
+  ociSub:      {display:"block",fontSize:9.5,color:"var(--side-muted)"},
+
+  themeBtn:    {display:"flex",alignItems:"center",justifyContent:"center",gap:9,width:"100%",
+                background:"transparent",border:"none",borderRadius:7,padding:"8px 10px",
+                cursor:"pointer",fontFamily:"inherit",fontSize:11.5,color:"var(--side-text)",
+                transition:"background .15s, color .15s"},
+  user:        {display:"flex",alignItems:"center",gap:9,marginTop:4,padding:"10px 8px 2px",
+                borderTop:"1px solid var(--side-border)"},
+  avatar:      {width:30,height:30,borderRadius:"50%",background:"var(--accent)",color:"#fff",
+                fontSize:10.5,fontWeight:700,display:"flex",alignItems:"center",
+                justifyContent:"center",flexShrink:0,letterSpacing:".02em",border:"none",cursor:"pointer"},
+  userName:    {display:"block",fontSize:11.5,fontWeight:600,color:"var(--side-strong)",
+                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.3},
+  userRole:    {display:"block",fontSize:9.5,color:"var(--side-muted)",marginTop:1},
+  signOut:     {display:"inline-flex",alignItems:"center",justifyContent:"center",
+                background:"none",border:"none",color:"var(--side-muted)",cursor:"pointer",
+                padding:5,borderRadius:6,transition:"color .15s, background .15s"},
 };
 
-/* ── Icons ── */
-function HubIcon({size=18})      { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="1.8" fill="currentColor" stroke="none"/><circle cx="8" cy="2.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="13" cy="11" r="1.3" fill="currentColor" stroke="none"/><circle cx="3" cy="11" r="1.3" fill="currentColor" stroke="none"/><path d="M8 4v2.2M9.5 9.1l2.3 1.4M6.5 9.1l-2.3 1.4"/></svg>; }
-function DashIcon({size=14})     { return <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>; }
-function ReportIcon({size=14})   { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="1.5" width="12" height="13" rx="1.5"/><line x1="5" y1="5.5" x2="11" y2="5.5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="10.5" x2="8" y2="10.5"/></svg>; }
-function TaskIcon({size=14})     { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><polyline points="5,8 7,10 11,6"/></svg>; }
-function CustomerIcon({size=14}) { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="5.5" r="3"/><path d="M2 14c0-3 2.5-5 6-5s6 2 6 5"/></svg>; }
-function AccountIcon({size=14})  { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="6" y1="6" x2="6" y2="14"/></svg>; }
-function GrafanaIcon({size=14})  { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="1,12 4,6 7,9 10,4 13,7 15,5"/><line x1="1" y1="14" x2="15" y2="14"/></svg>; }
-function CredIcon({size=14})     { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2"/><circle cx="8" cy="11" r="1" fill="currentColor" stroke="none"/></svg>; }
-function ScheduleIcon({size=14}) { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5"/><polyline points="8,4.5 8,8 10.5,10"/></svg>; }
-function LogIcon({size=14})      { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="1" y="2" width="14" height="12" rx="2"/><line x1="4" y1="6" x2="9" y2="6"/><line x1="4" y1="8.5" x2="12" y2="8.5"/><line x1="4" y1="11" x2="7" y2="11"/></svg>; }
-function SettingsIcon({size=14}) { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M3.2 12.8l1.4-1.4M11.4 4.6l1.4-1.4"/></svg>; }
-function AlertIcon({size=14})    { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2L2 13h12L8 2z"/><line x1="8" y1="7" x2="8" y2="10"/><circle cx="8" cy="12" r=".6" fill="currentColor" stroke="none"/></svg>; }
-function ActivityIcon({size=14}) { return <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="1,8 4,5 6,9 9,3 12,7 15,4"/><line x1="1" y1="13" x2="15" y2="13"/></svg>; }
-
+const TB = {
+  root:        {display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,
+                height:58,flexShrink:0,padding:"0 20px",background:"var(--bg2)",
+                borderBottom:"1px solid var(--border)",transition:"background .2s"},
+  iconBtn:     {display:"inline-flex",alignItems:"center",justifyContent:"center",width:30,height:30,
+                background:"transparent",border:"1px solid transparent",borderRadius:7,
+                color:"var(--muted)",cursor:"pointer",flexShrink:0,transition:"all .15s"},
+  crumbs:      {display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:12,whiteSpace:"nowrap"},
+  crumbMuted:  {color:"var(--muted2)"},
+  crumbSep:    {color:"var(--muted3)",fontSize:11},
+  crumbActive: {color:"var(--text)",fontWeight:600},
+  right:       {display:"flex",alignItems:"center",gap:8},
+  clock:       {display:"inline-flex",alignItems:"center",gap:6,fontSize:11.5,color:"var(--muted)",
+                fontFamily:"var(--mono)",padding:"5px 9px",borderRadius:7,background:"var(--surface2)",
+                whiteSpace:"nowrap"},
+  pill:        {display:"inline-flex",alignItems:"center",gap:7,fontSize:11.5,fontWeight:500,
+                color:"var(--text3)",background:"transparent",border:"1px solid var(--border2)",
+                borderRadius:99,padding:"5px 11px",cursor:"pointer",fontFamily:"inherit",
+                whiteSpace:"nowrap",transition:"all .15s"},
+  pillDot:     {width:6,height:6,borderRadius:"50%",flexShrink:0},
+};

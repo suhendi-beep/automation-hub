@@ -10,6 +10,7 @@
  * alert should pop up a notification card in the bottom-right corner.
  */
 import React, { useEffect, useRef, useState } from "react";
+import Icon from "./Icon.jsx";
 import { isAlertMuted, onAlertMuteChange } from "../alertMute.js";
 
 const POLL_MS        = 30000;      // sinkron dengan AlertPage
@@ -149,11 +150,11 @@ export default function AlertWatcher() {
           pointerEvents: "auto",
           width: 320,
           background: "var(--bg2)",
-          border: "1px solid #EF444455",
-          borderLeft: "4px solid #EF4444",
-          borderRadius: 10,
+          border: "1px solid var(--border2)",
+          borderLeft: "3px solid var(--red)",
+          borderRadius: 9,
           padding: "12px 14px",
-          boxShadow: "0 8px 28px rgba(0,0,0,.35)",
+          boxShadow: "var(--shadow-pop)",
           animation: "alertToastIn .35s cubic-bezier(.16,1,.3,1) forwards",
         }}>
           <style>{`
@@ -162,23 +163,27 @@ export default function AlertWatcher() {
               to   { transform: translateX(0);     opacity: 1; }
             }
           `}</style>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-            <span style={{ fontSize: 16, flexShrink: 0 }}>🚨</span>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
+            <span style={{ display:"flex", color:"var(--red)", flexShrink: 0, marginTop:1 }}>
+              <Icon name="alert" size={15}/>
+            </span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#F87171", textTransform: "uppercase", letterSpacing: ".05em" }}>
-                Alert Baru — {t.folder}
+              <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--red)", textTransform: "uppercase", letterSpacing: ".06em" }}>
+                New alert — {t.folder}
               </div>
-              <div style={{ fontSize: 12, color: "var(--text2)", fontWeight: 600, marginTop: 3 }}>
+              <div style={{ fontSize: 12, color: "var(--text)", fontWeight: 600, marginTop: 3 }}>
                 {t.title}
               </div>
               {t.resource && (
                 <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{t.resource}</div>
               )}
-              <div style={{ fontSize: 9, color: "var(--muted3)", marginTop: 3 }}>Durasi: {t.duration}</div>
+              <div style={{ fontSize: 9.5, color: "var(--muted3)", marginTop: 3 }}>Duration {t.duration}</div>
             </div>
             <button onClick={() => dismiss(t.id)}
-              style={{ background: "none", border: "none", color: "var(--muted3)",
-                fontSize: 13, cursor: "pointer", lineHeight: 1, flexShrink: 0 }}>✕</button>
+              style={{ display:"flex", background: "none", border: "none", color: "var(--muted3)",
+                cursor: "pointer", flexShrink: 0, padding: 2 }}>
+              <Icon name="close" size={12}/>
+            </button>
           </div>
         </div>
       ))}
