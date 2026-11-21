@@ -23,6 +23,21 @@ const apiRequestDelete  = (id, user) => fetch(`/api/tasks/${id}/request-delete`,
 const apiApproveDelete  = (id, action) => fetch(`/api/tasks/${id}/approve-delete`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action}) }).then(r => r.json());
 const apiPendingDeletes = ()    => fetch("/api/tasks/pending-deletes").then(r => r.json());
 
+function sortTasksNewestFirst(rows) {
+  return rows
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => {
+      const noA = Number.parseInt(String(a.t.taskNo || "").replace(/^TSK-/i, ""), 10);
+      const noB = Number.parseInt(String(b.t.taskNo || "").replace(/^TSK-/i, ""), 10);
+      if (Number.isFinite(noA) && Number.isFinite(noB) && noA !== noB) return noB - noA;
+      const timeA = Date.parse(a.t.createdAt || "") || 0;
+      const timeB = Date.parse(b.t.createdAt || "") || 0;
+      if (timeA !== timeB) return timeB - timeA;
+      return b.i - a.i;
+    })
+    .map(x => x.t);
+}
+
 /* ── One-time migration: DISABLED — data lama sudah dibersihkan ── */
 async function migrateLocalStorage() {
   localStorage.removeItem("pr_tasks_migrated"); // reset flag juga
@@ -136,7 +151,7 @@ export default function DailyTask({ customers }) {
   const loadTasks = useCallback(async () => {
     try {
       const data = await apiGet();
-      setTasks(Array.isArray(data) ? data : []);
+      setTasks(Array.isArray(data) ? sortTasksNewestFirst(data) : []);
     } catch(_) {}
     setLoading(false);
   }, []);

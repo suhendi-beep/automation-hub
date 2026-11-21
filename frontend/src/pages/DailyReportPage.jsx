@@ -16,10 +16,6 @@ function loadCachedBackup() {
   } catch { return null; }
 }
 
-function shiftWindowLabel(shift) {
-  return shift === "1" ? "(09:00–21:00)" : "(21:00–09:00)";
-}
-
 export default function DailyReportPage({ navigate }) {
   const today = localISODate();
 
@@ -85,48 +81,20 @@ export default function DailyReportPage({ navigate }) {
     return () => clearInterval(iv);
   }, [loadAlerts, loadBackupLog]);
 
-  /* ── Closed tickets within the selected shift ── */
+  /* ── Closed tickets on the selected date ── */
   useEffect(() => {
     let cancelled = false;
     const fetchTickets = async () => {
       try {
-        let datesToFetch = [tanggal];
-        if (shift !== "1") {
-          const prev = new Date(tanggal);
-          prev.setDate(prev.getDate() - 1);
-          datesToFetch = [localISODate(prev), tanggal];
-        }
-
-        const allTasks = [];
-        for (const d of datesToFetch) {
-          const res   = await fetch(`/api/tasks?date=${d}`);
-          const tasks = await res.json();
-          if (Array.isArray(tasks)) allTasks.push(...tasks);
-        }
-
-        const alertClosed = allTasks.filter(t =>
-          t.status === "Close" &&
-          (t.description || "").startsWith("[ALERT]")
-        );
-
-        const filtered = alertClosed.filter(t => {
-          const taskDate = (t.date || "").slice(0,10);
-          const taskTime = t.end || t.start || "00.00";
-          const [hh, mm] = taskTime.replace(":", ".").split(".").map(Number);
-          const mins = (hh||0) * 60 + (mm||0);
-
-          if (shift === "1") {
-            return taskDate === tanggal && mins >= 540 && mins <= 1260;
-          }
-          const prevDate = (() => {
-            const d = new Date(tanggal); d.setDate(d.getDate()-1);
-            return localISODate(d);
-          })();
-          return (taskDate === prevDate && mins >= 1260) ||
-                 (taskDate === tanggal  && mins <= 540);
-        });
-
-        if (!cancelled) setClosedTickets(filtered);
+        const res = await fetch(`/api/tasks?date=${tanggal}`);
+        const tasks = await res.json();
+        const closed = Array.isArray(tasks)
+          ? tasks.filter(t =>
+              ["close", "closed"].includes(String(t.status || "").trim().toLowerCase()) &&
+              (t.date || "").slice(0, 10) === tanggal
+            )
+          : [];
+        if (!cancelled) setClosedTickets(closed);
       } catch {
         if (!cancelled) setClosedTickets([]);
       }
@@ -134,7 +102,7 @@ export default function DailyReportPage({ navigate }) {
 
     fetchTickets();
     return () => { cancelled = true; };
-  }, [tanggal, shift]);
+  }, [tanggal]);
 
   /* ── Poll queued backup check ── */
   useEffect(() => {
@@ -280,8 +248,8 @@ export default function DailyReportPage({ navigate }) {
 
             <div style={D.chips}>
               <span style={D.chip}>
-                Tickets closed this shift: <strong style={{ color:"var(--green)" }}>{closedTickets.length}</strong>
-                <span style={{ color:"var(--muted3)", fontSize:9, marginLeft:4 }}>{shiftWindowLabel(shift)}</span>
+                Tickets closed on this date: <strong style={{ color:"var(--green)" }}>{closedTickets.length}</strong>
+                <span style={{ color:"var(--muted3)", fontSize:9, marginLeft:4 }}>{tanggal}</span>
               </span>
               {backupStatus ? (
                 <span style={{ ...D.chip, color:healthColor }}>
