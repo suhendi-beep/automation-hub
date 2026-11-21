@@ -19,6 +19,48 @@ services:
           cpus: 0.05
           memory: 32M
 
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-automation_hub}
+      POSTGRES_USER: ${DB_USER:-automation}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TZ: Asia/Jakarta
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [hub-net]
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 512M
+        reservations:
+          cpus: 0.05
+          memory: 128M
+
+  migrate:
+    build: ./backend
+    command: alembic upgrade head
+    restart: "no"
+    env_file: .env
+    environment:
+      - PYTHONPATH=/app
+      - TZ=Asia/Jakarta
+    volumes:
+      - ./shared:/app/shared
+    networks: [hub-net]
+    depends_on:
+      db:
+        condition: service_healthy
+
   backend:
     build: ./backend
     restart: always
@@ -34,6 +76,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:5000/api/ping"]
       interval: 15s
@@ -123,3 +169,6 @@ services:
 networks:
   hub-net:
     driver: bridge
+
+volumes:
+  pgdata:

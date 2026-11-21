@@ -7,7 +7,6 @@ import re
 import secrets
 import socket
 import ssl
-import tempfile
 import threading
 import time
 from collections import defaultdict
@@ -19,11 +18,31 @@ import requests
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from werkzeug.security import check_password_hash, generate_password_hash
+from sqlalchemy.exc import OperationalError, TimeoutError as SATimeoutError
 
 from celery_worker import SCHEDULE_META, celery, run_automation, run_oci_login
 import oci_session
 import oci_dbm
+import repositories as repo
+from db import check_db
+from repositories import (
+    AccountNotFound,
+    DeleteRequestNotFound,
+    DuplicateTask,
+    DuplicateUser,
+    InvalidRequestError,
+    LastAdminError,
+    RequestAlreadyReviewed,
+    RequestNotFound,
+    SelfApprovalError,
+    TaskNotFound,
+    UserNotFound,
+)
+from security import (
+    hash_password as _hash_password,
+    password_policy_error as _password_policy_error,
+    verify_password as _verify_password,
+)
 
 # ── Paths ────────────────────────────────────────────────────
 SHARED_DIR = os.getenv("SHARED_DIR", "/app/shared")
@@ -174,52 +193,9 @@ REGISTRY = {
 }
 
 
-# ══════════════════════════════════════════════════════════════
-# JSON storage helpers — atomic writes + process lock
-# ══════════════════════════════════════════════════════════════
-_FILE_LOCK = threading.RLock()
-
-
-def _read_json(path, default):
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        log.warning("Cannot read %s: %s", path, e)
-        return default
-
-
-def _write_json(path, data):
-    """Write JSON atomically: temp file in the same dir + os.replace()."""
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-
-
 def _now():
     return datetime.now()
 
-
-# ══════════════════════════════════════════════════════════════
-# Authentication
-# ══════════════════════════════════════════════════════════════
-USERS_FILE = _shared("logs", "users.json")
-ACTIVITY_FILE = _shared("logs", "activity_log.json")
-REQUESTS_FILE = _shared("logs", "requests.json")
 
 # Fitur yang bisa diminta aksesnya oleh engineer (approval oleh admin).
 FEATURES = {
@@ -228,50 +204,12 @@ FEATURES = {
 }
 
 
-def _hash_password(password):
-    return generate_password_hash(password)
-
-
-def _is_hashed(value):
-    return value.startswith(("pbkdf2:", "scrypt:", "argon2:"))
-
-
-def _verify_password(stored, password):
-    if _is_hashed(stored):
-        return check_password_hash(stored, password)
-    return secrets.compare_digest(stored, password)
-
-
-def _password_policy_error(password):
-    password = password or ""
-    if len(password) < 6:
-        return "Password must be at least 6 characters"
-    if not re.search(r"[A-Z]", password):
-        return "Password must contain an uppercase letter"
-    if not re.search(r"[a-z]", password):
-        return "Password must contain a lowercase letter"
-    if not re.search(r"\d", password):
-        return "Password must contain a number"
-    if not re.search(r"[^A-Za-z0-9]", password):
-        return "Password must contain a symbol"
-    return ""
-
-
 def _user_features(user):
     if not user:
         return []
     if user.get("role") == "admin":
         return list(FEATURES.keys())
     return [f for f in (user.get("features") or []) if f in FEATURES]
-
-
-def _load_requests():
-    raw = _read_json(REQUESTS_FILE, [])
-    return raw if isinstance(raw, list) else []
-
-
-def _save_requests(items):
-    _write_json(REQUESTS_FILE, items[-500:])
 
 
 def _public_request(req):
@@ -286,60 +224,6 @@ def _public_request(req):
         "reviewed_at":  req.get("reviewed_at"),
         "reviewed_by":  req.get("reviewed_by"),
     }
-
-
-def _queue_request(req):
-    """Insert a request, replacing any pending request of the same kind/user."""
-    with _FILE_LOCK:
-        items = [
-            r for r in _load_requests()
-            if not (
-                r.get("status") == "pending"
-                and r.get("type") == req["type"]
-                and r.get("username") == req["username"]
-                and r.get("feature") == req.get("feature")
-            )
-        ]
-        items.append(req)
-        _save_requests(items)
-
-
-def _default_users():
-    username = os.getenv("AUTH_USERNAME", "admin")
-    return [{
-        "username": username,
-        "password": _hash_password(os.getenv("AUTH_PASSWORD", "admin")),
-        "display": username.upper(),
-        "role": "admin",
-    }]
-
-
-def _save_users(users):
-    _write_json(USERS_FILE, users)
-
-
-def _load_users():
-    """Load users, migrating legacy plaintext passwords to hashes."""
-    raw = _read_json(USERS_FILE, None)
-    if not raw:
-        users = _default_users()
-        _save_users(users)
-        return users
-
-    migrated = False
-    for user in raw:
-        pw = user.get("password", "")
-        if pw and not _is_hashed(pw):
-            user["password"] = _hash_password(pw)
-            migrated = True
-    if migrated:
-        _save_users(raw)
-        log.info("Migrated plaintext user passwords to hashes")
-    return raw
-
-
-def _find_user(username):
-    return next((u for u in _load_users() if u.get("username") == username), None)
 
 
 def _token_version(user):
@@ -401,7 +285,7 @@ def require_auth():
     except BadSignature:
         return jsonify({"error": "Invalid session token"}), 401
 
-    user = _find_user(payload.get("u", ""))
+    user = repo.get_user(payload.get("u", ""))
     if not user or payload.get("v") != _token_version(user):
         return jsonify({"error": "Session no longer valid"}), 401
 
@@ -431,6 +315,13 @@ def _admin_or_feature(feature):
 # ══════════════════════════════════════════════════════════════
 # Core / customer endpoints
 # ══════════════════════════════════════════════════════════════
+@app.errorhandler(OperationalError)
+@app.errorhandler(SATimeoutError)
+def handle_db_unavailable(exc):
+    log.error("Database unavailable: %s", exc)
+    return jsonify({"error": "Database unavailable"}), 503
+
+
 @app.route("/api/ping")
 def ping():
     return jsonify({"status": "ok"})
@@ -438,10 +329,15 @@ def ping():
 
 @app.route("/api/health")
 def health():
+    try:
+        database_ok = check_db()
+    except (OperationalError, SATimeoutError):
+        return jsonify({"status": "error", "database": False}), 503
     return jsonify({
         "status": "ok",
         "time": _now().isoformat(),
         "storage": os.path.isdir(SHARED_DIR),
+        "database": database_ok,
     })
 
 
@@ -1696,26 +1592,12 @@ def grafana_dashboards():
                         "configured": True, "error": str(e)})
 
 
-ALERT_ESKALASI_FILE = _shared("logs", "alert_eskalasi.json")
 ESKALASI_TTL_DAYS = int(os.getenv("ESKALASI_TTL_DAYS", "7"))
-
-
-def _load_eskalasi():
-    data = _read_json(ALERT_ESKALASI_FILE, {})
-    cutoff = (_now() - timedelta(days=ESKALASI_TTL_DAYS)).isoformat()
-    pruned = {k: v for k, v in data.items() if (v.get("at") or "") >= cutoff}
-    if len(pruned) != len(data):
-        _write_json(ALERT_ESKALASI_FILE, pruned)
-    return pruned
-
-
-def _save_eskalasi(data):
-    _write_json(ALERT_ESKALASI_FILE, data)
 
 
 @app.route("/api/alerts/eskalasi", methods=["GET"])
 def get_eskalasi():
-    return jsonify(_load_eskalasi())
+    return jsonify(repo.list_escalations(ESKALASI_TTL_DAYS))
 
 
 @app.route("/api/alerts/eskalasi", methods=["POST"])
@@ -1725,93 +1607,93 @@ def post_eskalasi():
     by = data.get("by", "")
     if not key:
         return jsonify({"error": "key required"}), 400
-    with _FILE_LOCK:
-        store = _load_eskalasi()
-        store[key] = {"by": by, "at": _now().isoformat()}
-        _save_eskalasi(store)
+    repo.set_escalation(key, by, ESKALASI_TTL_DAYS)
     return jsonify({"status": "ok"})
 
 
 # ══════════════════════════════════════════════════════════════
 # Daily tasks
 # ══════════════════════════════════════════════════════════════
-TASKS_FILE = _shared("daily_tasks.json")
-DELETE_REQS_FILE = _shared("logs", "delete_requests.json")
-
-
-def _load_tasks():
-    return _read_json(TASKS_FILE, [])
-
-
-def _save_tasks(tasks):
-    _write_json(TASKS_FILE, tasks)
-
-
-def _load_delete_reqs():
-    return _read_json(DELETE_REQS_FILE, [])
-
-
-def _save_delete_reqs(reqs):
-    _write_json(DELETE_REQS_FILE, reqs)
-
-
-def _next_task_no(tasks):
-    """TSK-001, TSK-002, ... — based on the highest existing numeric suffix."""
-    max_n = 0
-    for t in tasks:
-        no = (t.get("taskNo") or "")
-        if no.startswith("TSK-"):
-            try:
-                max_n = max(max_n, int(no.split("-")[1]))
-            except (IndexError, ValueError):
-                pass
-    return f"TSK-{max_n + 1:03d}"
-
-
 @app.route("/api/tasks", methods=["GET"])
 def get_tasks():
-    tasks = _load_tasks()
-    date_filter = request.args.get("date")
-    if date_filter:
-        tasks = [t for t in tasks if (t.get("date") or "").startswith(date_filter)]
-    return jsonify(tasks)
+    if request.args.get("page") or request.args.get("page_size"):
+        return jsonify(repo.query_tasks(
+            date_filter=request.args.get("date"),
+            month_filter=request.args.get("month"),
+            search=request.args.get("q"),
+            status=request.args.get("status"),
+            customer=request.args.get("customer"),
+            page=request.args.get("page", 1),
+            page_size=request.args.get("page_size", 50),
+        ))
+    return jsonify(repo.list_tasks(
+        request.args.get("date"),
+        request.args.get("month"),
+    ))
 
 
 @app.route("/api/tasks", methods=["POST"])
 def create_task():
     data = request.json or {}
-    with _FILE_LOCK:
-        tasks = _load_tasks()
-        new_task = {
-            "id": data.get("id") or str(int(_now().timestamp() * 1000)),
-            "taskNo": _next_task_no(tasks),
-            "customer": data.get("customer", ""),
-            "description": data.get("description", ""),
-            "detail": data.get("detail", ""),
-            "date": data.get("date", ""),
-            "start": data.get("start", ""),
-            "end": data.get("end", ""),
-            "pic": data.get("pic", ""),
-            "status": data.get("status", "Open"),
-            "generateReport": data.get("generateReport", False),
-            "createdAt": data.get("createdAt", _now().isoformat()),
-        }
-        tasks.append(new_task)
-        _save_tasks(tasks)
-    return jsonify(new_task), 201
+    description = str(data.get("description") or "").strip()
+    is_alert = description.startswith("[ALERT]")
+    pic = str(data.get("pic") or "").strip()
+    generate_report = repo.bool_value(data.get("generateReport", False))
+    allowed_pics = {user["display"] for user in repo.list_users()}
+
+    if is_alert:
+        if pic and pic not in allowed_pics:
+            return jsonify({"error": "PIC tidak diizinkan", "pic": pic}), 403
+    elif not generate_report and pic not in allowed_pics:
+        return jsonify({"error": "PIC tidak diizinkan", "pic": pic}), 403
+
+    now = repo.now_jakarta()
+    recent_count = repo.count_tasks_since(now - timedelta(seconds=60))
+    if recent_count >= 30:
+        return jsonify({
+            "error": "Terlalu banyak task dibuat dalam 60 detik terakhir — ditolak untuk mencegah data spam. Hubungi admin jika ini sengaja.",
+            "recent_count": recent_count,
+        }), 429
+
+    if is_alert:
+        alert_key = str(data.get("alertKey") or "").strip()
+        existing = repo.find_open_alert_task(
+            alert_key,
+            description if not alert_key else "",
+        )
+        if existing:
+            return jsonify(existing), 200
+        duplicate = repo.find_recent_duplicate_alert(
+            description,
+            str(data.get("customer") or "").strip(),
+            now - timedelta(seconds=900),
+        )
+        if duplicate:
+            return jsonify(duplicate), 200
+
+    try:
+        task = repo.create_task(data)
+    except DuplicateTask:
+        return jsonify({"error": "Task already exists"}), 409
+
+    if any(data.get(key) for key in ("_by", "_byDisplay", "_action", "_detail")):
+        repo.add_activity(
+            username=str(data.get("_by") or data.get("pic") or "system").strip() or "system",
+            display=str(data.get("_byDisplay") or data.get("pic") or "System").strip() or "System",
+            action=data.get("_action") or "Create Task",
+            category="task",
+            detail=data.get("_detail") or f"[{task.get('customer', '')}] {task.get('description', '')}",
+        )
+    return jsonify(task), 201
 
 
 @app.route("/api/tasks/<task_id>", methods=["PUT"])
 def update_task(task_id):
-    data = request.json or {}
-    with _FILE_LOCK:
-        tasks = _load_tasks()
-        for task in tasks:
-            if task["id"] == task_id:
-                task.update(data)
-                _save_tasks(tasks)
-                return jsonify(task)
-    return jsonify({"error": "Task not found"}), 404
+    try:
+        task = repo.update_task(task_id, request.json or {})
+    except TaskNotFound:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(task)
 
 
 @app.route("/api/tasks/<task_id>", methods=["DELETE"])
@@ -1819,43 +1701,27 @@ def delete_task(task_id):
     denied = _admin_only()
     if denied:
         return denied
-    with _FILE_LOCK:
-        tasks = _load_tasks()
-        tasks = [t for t in tasks if t["id"] != task_id]
-        _save_tasks(tasks)
-        reqs = [r for r in _load_delete_reqs() if r.get("task_id") != task_id]
-        _save_delete_reqs(reqs)
+    repo.delete_task(task_id)
     return jsonify({"status": "ok"})
 
 
 # ── Task delete-request workflow (non-admin must ask an admin to approve) ──
 @app.route("/api/tasks/pending-deletes", methods=["GET"])
 def get_pending_deletes():
-    return jsonify(_load_delete_reqs())
+    return jsonify(repo.list_pending_deletes())
 
 
 @app.route("/api/tasks/<task_id>/request-delete", methods=["POST"])
 def request_delete_task(task_id):
     data = request.json or {}
-    with _FILE_LOCK:
-        tasks = _load_tasks()
-        task = next((t for t in tasks if t["id"] == task_id), None)
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
-
-        reqs = _load_delete_reqs()
-        if any(r["task_id"] == task_id for r in reqs):
-            return jsonify({"status": "already_requested"})
-
-        reqs.append({
-            "task_id":      task_id,
-            "task_no":      task.get("taskNo", ""),
-            "task_desc":    task.get("description", ""),
-            "requested_by": g.user.get("display") or data.get("display") or g.user["username"],
-            "requested_at": _now().isoformat(),
-        })
-        _save_delete_reqs(reqs)
-    return jsonify({"status": "requested"})
+    requested_by = (
+        g.user.get("display") or data.get("display") or g.user["username"]
+    )
+    try:
+        status = repo.request_delete(task_id, requested_by)
+    except TaskNotFound:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify({"status": status})
 
 
 @app.route("/api/tasks/<task_id>/approve-delete", methods=["POST"])
@@ -1865,20 +1731,11 @@ def approve_delete_task(task_id):
         return denied
     data = request.json or {}
     action = data.get("action", "approve")
-
-    with _FILE_LOCK:
-        reqs = _load_delete_reqs()
-        if not any(r["task_id"] == task_id for r in reqs):
-            return jsonify({"error": "No pending request for this task"}), 404
-        reqs = [r for r in reqs if r["task_id"] != task_id]
-        _save_delete_reqs(reqs)
-
-        if action == "approve":
-            tasks = _load_tasks()
-            tasks = [t for t in tasks if t["id"] != task_id]
-            _save_tasks(tasks)
-
-    return jsonify({"status": "approved" if action == "approve" else "rejected"})
+    try:
+        status = repo.resolve_delete(task_id, action)
+    except DeleteRequestNotFound:
+        return jsonify({"error": "No pending request for this task"}), 404
+    return jsonify({"status": status})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1895,7 +1752,7 @@ def _public_user(user):
 
 @app.route("/api/auth/users", methods=["GET"])
 def list_users():
-    return jsonify([_public_user(u) for u in _load_users()])
+    return jsonify([_public_user(u) for u in repo.list_users()])
 
 
 @app.route("/api/auth/users", methods=["POST"])
@@ -1912,18 +1769,15 @@ def create_user():
         return jsonify({"error": "Password must be at least 8 characters"}), 400
     role = "admin" if data.get("role") == "admin" else "engineer"
 
-    with _FILE_LOCK:
-        users = _load_users()
-        if any(u["username"] == username for u in users):
-            return jsonify({"error": "Username already exists"}), 409
-        user = {
-            "username": username,
-            "password": _hash_password(password),
-            "display": (data.get("display") or username).strip(),
-            "role": role,
-        }
-        users.append(user)
-        _save_users(users)
+    try:
+        user = repo.create_user(
+            username,
+            _hash_password(password),
+            (data.get("display") or username).strip(),
+            role,
+        )
+    except DuplicateUser:
+        return jsonify({"error": "Username already exists"}), 409
     return jsonify(_public_user(user)), 201
 
 
@@ -1933,28 +1787,20 @@ def update_user(username):
     if denied:
         return denied
     data = request.json or {}
+    password_hash = None
+    if data.get("password"):
+        if len(data["password"]) < 8:
+            return jsonify({"error": "Password must be at least 8 characters"}), 400
+        password_hash = _hash_password(data["password"])
+    display = data.get("display") if data.get("display") else None
+    role = data.get("role") if data.get("role") in ("admin", "engineer") else None
 
-    with _FILE_LOCK:
-        users = _load_users()
-        user = next((u for u in users if u["username"] == username), None)
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-
-        new_role = data.get("role", user.get("role", "engineer"))
-        admins = [u for u in users if u.get("role") == "admin"]
-        if user.get("role") == "admin" and new_role != "admin" and len(admins) <= 1:
-            return jsonify({"error": "Cannot demote the last admin"}), 400
-
-        if data.get("password"):
-            if len(data["password"]) < 8:
-                return jsonify({"error": "Password must be at least 8 characters"}), 400
-            user["password"] = _hash_password(data["password"])
-        if data.get("display"):
-            user["display"] = data["display"].strip()
-        if data.get("role") in ("admin", "engineer"):
-            user["role"] = data["role"]
-
-        _save_users(users)
+    try:
+        user = repo.update_user(username, password_hash, display, role)
+    except UserNotFound:
+        return jsonify({"error": "User not found"}), 404
+    except LastAdminError:
+        return jsonify({"error": "Cannot demote the last admin"}), 400
     return jsonify(_public_user(user))
 
 
@@ -1966,22 +1812,18 @@ def delete_user(username):
     if username == g.user["username"]:
         return jsonify({"error": "You cannot delete your own account"}), 400
 
-    with _FILE_LOCK:
-        users = _load_users()
-        target = next((u for u in users if u["username"] == username), None)
-        if not target:
-            return jsonify({"error": "User not found"}), 404
-        admins = [u for u in users if u.get("role") == "admin"]
-        if target.get("role") == "admin" and len(admins) <= 1:
-            return jsonify({"error": "Cannot delete the last admin"}), 400
-        users = [u for u in users if u["username"] != username]
-        _save_users(users)
+    try:
+        repo.delete_user(username)
+    except UserNotFound:
+        return jsonify({"error": "User not found"}), 404
+    except LastAdminError:
+        return jsonify({"error": "Cannot delete the last admin"}), 400
     return jsonify({"status": "ok"})
 
 
 @app.route("/api/auth/me")
 def auth_me():
-    user = _find_user(g.user["username"])
+    user = repo.get_user(g.user["username"])
     if not user:
         return jsonify({"error": "User not found"}), 404
     return jsonify(_public_user(user))
@@ -1996,35 +1838,25 @@ def change_password():
     if err:
         return jsonify({"error": err}), 400
 
-    with _FILE_LOCK:
-        users = _load_users()
-        user = next((u for u in users if u["username"] == g.user["username"]), None)
-        if not user or not _verify_password(user.get("password", ""), current):
-            return jsonify({"error": "Current password is incorrect"}), 400
+    user = repo.get_user(g.user["username"])
+    if not user or not _verify_password(user.get("password", ""), current):
+        return jsonify({"error": "Current password is incorrect"}), 400
 
-        # Admin berganti password langsung; engineer harus lewat approval admin.
-        if user.get("role") == "admin":
-            user["password"] = _hash_password(new)
-            _save_users(users)
-            token = _issue_token(user)
-        else:
-            token = None
+    # Admin berganti password langsung; engineer harus lewat approval admin.
+    if user.get("role") == "admin":
+        user = repo.set_password(user["username"], _hash_password(new))
+        return jsonify({"status": "ok", "token": _issue_token(user)})
 
-    if user.get("role") != "admin":
-        _queue_request({
-            "id":           _now().strftime("%Y%m%d%H%M%S%f"),
-            "type":         "password",
-            "username":     user["username"],
-            "display":      user.get("display", user["username"]),
-            "password_hash": _hash_password(new),
-            "status":       "pending",
-            "requested_at": _now().isoformat(),
-        })
-        return jsonify({
-            "status": "pending",
-            "message": "Password change request sent. An admin must approve it.",
-        })
-    return jsonify({"status": "ok", "token": token})
+    repo.queue_request({
+        "type":          "password",
+        "username":      user["username"],
+        "display":       user.get("display", user["username"]),
+        "password_hash": _hash_password(new),
+    })
+    return jsonify({
+        "status": "pending",
+        "message": "Password change request sent. An admin must approve it.",
+    })
 
 
 @app.route("/api/auth/forgot-password", methods=["POST"])
@@ -2036,17 +1868,13 @@ def forgot_password():
     if err:
         return jsonify({"error": err}), 400
 
-    with _FILE_LOCK:
-        user = next((u for u in _load_users() if u["username"] == username), None)
+    user = repo.get_user(username)
     if user:
-        _queue_request({
-            "id":           _now().strftime("%Y%m%d%H%M%S%f"),
-            "type":         "password",
-            "username":     user["username"],
-            "display":      user.get("display", user["username"]),
+        repo.queue_request({
+            "type":          "password",
+            "username":      user["username"],
+            "display":       user.get("display", user["username"]),
             "password_hash": _hash_password(new),
-            "status":       "pending",
-            "requested_at": _now().isoformat(),
         })
     # Jangan bocorkan apakah username terdaftar atau tidak.
     return jsonify({
@@ -2062,32 +1890,27 @@ def request_access():
     if feature not in FEATURES:
         return jsonify({"error": "Unknown feature"}), 400
 
-    user = _find_user(g.user["username"])
+    user = repo.get_user(g.user["username"])
     if not user:
         return jsonify({"error": "User not found"}), 404
     if feature in _user_features(user):
         return jsonify({"error": "You already have access to this feature"}), 409
 
-    _queue_request({
-        "id":           _now().strftime("%Y%m%d%H%M%S%f"),
-        "type":         "access",
-        "username":     user["username"],
-        "display":      user.get("display", user["username"]),
-        "feature":      feature,
-        "status":       "pending",
-        "requested_at": _now().isoformat(),
+    repo.queue_request({
+        "type":     "access",
+        "username": user["username"],
+        "display":  user.get("display", user["username"]),
+        "feature":  feature,
     })
     return jsonify({"status": "pending", "message": "Access request sent for admin approval."})
 
 
 @app.route("/api/requests/mine")
 def my_requests():
-    items = [
-        _public_request(r) for r in _load_requests()
-        if r.get("username") == g.user["username"]
-    ]
-    items.sort(key=lambda r: r.get("requested_at") or "", reverse=True)
-    return jsonify(items)
+    return jsonify([
+        _public_request(r)
+        for r in repo.list_requests(username=g.user["username"])
+    ])
 
 
 @app.route("/api/requests")
@@ -2096,11 +1919,10 @@ def list_requests():
     if denied:
         return denied
     status = request.args.get("status", "pending")
-    items = [_public_request(r) for r in _load_requests()]
-    if status != "all":
-        items = [r for r in items if r["status"] == status]
-    items.sort(key=lambda r: r.get("requested_at") or "", reverse=True)
-    return jsonify(items)
+    return jsonify([
+        _public_request(r)
+        for r in repo.list_requests(status=status)
+    ])
 
 
 @app.route("/api/requests/<request_id>/approve", methods=["POST"])
@@ -2108,39 +1930,24 @@ def approve_request(request_id):
     denied = _admin_or_feature("account-management")
     if denied:
         return denied
-
-    with _FILE_LOCK:
-        items = _load_requests()
-        req = next((r for r in items if r.get("id") == request_id), None)
-        if not req:
-            return jsonify({"error": "Request not found"}), 404
-        if req.get("status") != "pending":
-            return jsonify({"error": "Request already reviewed"}), 409
-        if g.user.get("role") != "admin" and req.get("username") == g.user["username"]:
-            return jsonify({"error": "You cannot approve your own request"}), 403
-
-        users = _load_users()
-        user = next((u for u in users if u["username"] == req.get("username")), None)
-        if not user:
-            return jsonify({"error": "User no longer exists"}), 404
-
-        if req.get("type") == "password":
-            user["password"] = req.get("password_hash") or user.get("password")
-            _save_users(users)
-        elif req.get("type") == "access":
-            feature = req.get("feature")
-            if feature in FEATURES:
-                feats = user.setdefault("features", [])
-                if feature not in feats:
-                    feats.append(feature)
-                _save_users(users)
-        else:
-            return jsonify({"error": "Unknown request type"}), 400
-
-        req["status"] = "approved"
-        req["reviewed_at"] = _now().isoformat()
-        req["reviewed_by"] = g.user["username"]
-        _save_requests(items)
+    try:
+        req = repo.review_request(
+            request_id,
+            g.user["username"],
+            "approve",
+            g.user.get("role") == "admin",
+            set(FEATURES.keys()),
+        )
+    except RequestNotFound:
+        return jsonify({"error": "Request not found"}), 404
+    except RequestAlreadyReviewed:
+        return jsonify({"error": "Request already reviewed"}), 409
+    except SelfApprovalError:
+        return jsonify({"error": "You cannot approve your own request"}), 403
+    except UserNotFound:
+        return jsonify({"error": "User no longer exists"}), 404
+    except InvalidRequestError:
+        return jsonify({"error": "Unknown request type"}), 400
     return jsonify(_public_request(req))
 
 
@@ -2149,72 +1956,53 @@ def reject_request(request_id):
     denied = _admin_or_feature("account-management")
     if denied:
         return denied
-
-    with _FILE_LOCK:
-        items = _load_requests()
-        req = next((r for r in items if r.get("id") == request_id), None)
-        if not req:
-            return jsonify({"error": "Request not found"}), 404
-        if req.get("status") != "pending":
-            return jsonify({"error": "Request already reviewed"}), 409
-        req["status"] = "rejected"
-        req["reviewed_at"] = _now().isoformat()
-        req["reviewed_by"] = g.user["username"]
-        _save_requests(items)
+    try:
+        req = repo.review_request(
+            request_id,
+            g.user["username"],
+            "reject",
+            g.user.get("role") == "admin",
+            set(FEATURES.keys()),
+        )
+    except RequestNotFound:
+        return jsonify({"error": "Request not found"}), 404
+    except RequestAlreadyReviewed:
+        return jsonify({"error": "Request already reviewed"}), 409
     return jsonify(_public_request(req))
 
 
 @app.route("/api/activity", methods=["GET"])
 def get_activity():
-    entries = _read_json(ACTIVITY_FILE, [])
-    user_filter = request.args.get("user")
-    from_filter = request.args.get("from")
-    to_filter = request.args.get("to")
-    if user_filter:
-        entries = [e for e in entries if e.get("username") == user_filter]
-    if from_filter:
-        entries = [e for e in entries if (e.get("ts") or "")[:10] >= from_filter]
-    if to_filter:
-        entries = [e for e in entries if (e.get("ts") or "")[:10] <= to_filter]
-    return jsonify(entries)
+    return jsonify(repo.list_activity(
+        user=request.args.get("user"),
+        from_date=request.args.get("from"),
+        to_date=request.args.get("to"),
+    ))
 
 
 @app.route("/api/activity", methods=["POST"])
 def post_activity():
     data = request.json or {}
     username = g.user["username"]
-    display = g.user.get("display", username)
-    now = _now()
-    entry = {
-        "id":       f"{now.strftime('%Y%m%d%H%M%S%f')}",
-        "ts":       now.isoformat(),
-        "date":     now.strftime("%Y-%m-%d"),
-        "username": username,
-        "display":  display,
-        "action":   data.get("action", ""),
-        "category": data.get("category", "general"),
-        "detail":   data.get("detail", ""),
-    }
-    with _FILE_LOCK:
-        entries = _read_json(ACTIVITY_FILE, [])
-        entries.append(entry)
-        entries = entries[-5000:]
-        _write_json(ACTIVITY_FILE, entries)
+    entry = repo.add_activity(
+        username=username,
+        display=g.user.get("display", username),
+        action=data.get("action", ""),
+        category=data.get("category", "general"),
+        detail=data.get("detail", ""),
+    )
     return jsonify(entry), 201
 
 
 # ══════════════════════════════════════════════════════════════
 # Cloud accounts (simple registry, admin-managed)
 # ══════════════════════════════════════════════════════════════
-ACCOUNTS_FILE = _shared("accounts.json")
-
-
 @app.route("/api/accounts", methods=["GET"])
 def list_accounts():
     denied = _admin_or_feature("account-management")
     if denied:
         return denied
-    return jsonify(_read_json(ACCOUNTS_FILE, []))
+    return jsonify(repo.list_accounts())
 
 
 @app.route("/api/accounts", methods=["POST"])
@@ -2226,20 +2014,8 @@ def create_account():
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Account name is required"}), 400
-    with _FILE_LOCK:
-        accounts = _read_json(ACCOUNTS_FILE, [])
-        account = {
-            "id": str(int(_now().timestamp() * 1000)),
-            "name": name,
-            "platform": data.get("platform", "OCI"),
-            "tenancy": data.get("tenancy", ""),
-            "region": data.get("region", ""),
-            "notes": data.get("notes", ""),
-            "createdAt": _now().isoformat(),
-        }
-        accounts.append(account)
-        _write_json(ACCOUNTS_FILE, accounts)
-    return jsonify(account), 201
+    data["name"] = name
+    return jsonify(repo.create_account(data)), 201
 
 
 @app.route("/api/accounts/<account_id>", methods=["PUT"])
@@ -2247,16 +2023,10 @@ def update_account(account_id):
     denied = _admin_or_feature("account-management")
     if denied:
         return denied
-    data = request.json or {}
-    with _FILE_LOCK:
-        accounts = _read_json(ACCOUNTS_FILE, [])
-        account = next((a for a in accounts if a["id"] == account_id), None)
-        if not account:
-            return jsonify({"error": "Account not found"}), 404
-        for field in ("name", "platform", "tenancy", "region", "notes"):
-            if field in data:
-                account[field] = data[field]
-        _write_json(ACCOUNTS_FILE, accounts)
+    try:
+        account = repo.update_account(account_id, request.json or {})
+    except AccountNotFound:
+        return jsonify({"error": "Account not found"}), 404
     return jsonify(account)
 
 
@@ -2265,12 +2035,8 @@ def delete_account(account_id):
     denied = _admin_or_feature("account-management")
     if denied:
         return denied
-    with _FILE_LOCK:
-        accounts = _read_json(ACCOUNTS_FILE, [])
-        remaining = [a for a in accounts if a["id"] != account_id]
-        if len(remaining) == len(accounts):
-            return jsonify({"error": "Account not found"}), 404
-        _write_json(ACCOUNTS_FILE, remaining)
+    if not repo.delete_account(account_id):
+        return jsonify({"error": "Account not found"}), 404
     return jsonify({"status": "ok"})
 
 
@@ -2324,11 +2090,8 @@ def auth_login():
     username = data.get("username", "")
     password = data.get("password", "")
 
-    user = next(
-        (u for u in _load_users() if u["username"] == username and _verify_password(u.get("password", ""), password)),
-        None,
-    )
-    if not user:
+    user = repo.get_user(username)
+    if not user or not _verify_password(user.get("password", ""), password):
         _record_login_failure(ip)
         return jsonify({"ok": False, "error": "Invalid username or password"}), 401
 

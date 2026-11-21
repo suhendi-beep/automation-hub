@@ -3,7 +3,7 @@ def _create_task(client, headers, description="Test task"):
         "customer": "pelindo",
         "description": description,
         "date": "2026-11-19",
-        "pic": "tester",
+        "pic": "ADMIN",
     })
     assert response.status_code == 201
     return response.get_json()

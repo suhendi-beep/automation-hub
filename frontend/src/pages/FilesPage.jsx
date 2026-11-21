@@ -7,15 +7,16 @@ const FOLDER_MAP = {
   grafana_capture:    "Weekly Capture Grafana HO",
   oci_ilcs_backup:    "Weekly Backup Report OCI ILCS",
   oci_pelindo_backup: "Weekly Backup Report OCI Pelindo",
-  daily_ilcs_status:  "Daily Backup Status ILCS",
 };
 
 const FILE_FILTER = {
   grafana_capture:    n => n.includes("grafana"),
   oci_ilcs_backup:    n => n.includes("oci_ilcs") || (n.includes("ilcs") && !n.includes("status")),
   oci_pelindo_backup: n => n.includes("oci_pelindo"),
-  daily_ilcs_status:  n => n.includes("status") || n.includes("daily"),
 };
+
+// Daily Backup Status now reports only through its live log, not an output file.
+const LEGACY_DAILY_STATUS_FILE = /pelindo_daily_status/i;
 
 function fileIcon(name) {
   if (name.endsWith(".pptx")) return "archive";
@@ -41,6 +42,7 @@ export default function FilesPage({ customer, navigate }) {
       .then(r => r.json())
       .then(d => {
         const all = [...(d.reports||[]), ...(d.screenshots||[])]
+          .filter(f => !LEGACY_DAILY_STATUS_FILE.test(f.name))
           .sort((a,b) => new Date(b.created) - new Date(a.created));
         setFiles(all);
         setLoading(false);
@@ -69,7 +71,7 @@ export default function FilesPage({ customer, navigate }) {
   if (!customer) return null;
 
   // Build folder structure
-  const automations = customer.automations || [];
+  const automations = (customer.automations || []).filter(a => a.id !== "daily_ilcs_status");
   const folders = automations.map(auto => {
     const filter = FILE_FILTER[auto.id] || (() => false);
     const folderFiles = files.filter(f => filter(f.name.toLowerCase()));

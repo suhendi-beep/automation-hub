@@ -4,7 +4,6 @@ tasks/pelindo/daily_ilcs_status.py
 Migrated dari: status_backup_ilcs_pelindo.py
 
 Requires: OCI CLI config di /root/.oci/ (mount dari ./oci_config)
-Output: /app/shared/reports/pelindo_daily_status_YYYY-MM-DD.txt
 """
 import subprocess, json, os
 from datetime import datetime, timedelta, timezone

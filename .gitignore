@@ -32,8 +32,15 @@ dist-verify/
 shared/celerybeat-schedule*
 shared/celerybeat.pid
 
-# Runtime data written by the app
+# Runtime data written by the app (now in PostgreSQL)
 shared/accounts.json
+shared/daily_tasks.json
+shared/logs/daily_tasks.json
+shared/*.migrated
+
+# Pre-migration snapshots and database dumps
+shared.pre-pg-*/
+shared/backups/
 
 # Test artefacts
 .pytest_cache/

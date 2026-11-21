@@ -26,6 +26,12 @@ def test_invalid_token_rejected(client):
     assert client.get("/api/tasks", headers={"Authorization": "Bearer nope"}).status_code == 401
 
 
+def test_health_reports_database(client, admin_headers):
+    response = client.get("/api/health", headers=admin_headers)
+    assert response.status_code == 200
+    assert response.get_json()["database"] is True
+
+
 def test_password_is_hashed_at_rest(client):
     token = client.post(
         "/api/auth/login", json={"username": "admin", "password": "admin"}
@@ -34,7 +40,9 @@ def test_password_is_hashed_at_rest(client):
     assert "admin" in [u["username"] for u in users]
     assert all("password" not in u for u in users)
 
-    import app as app_module
-    stored = app_module._read_json(app_module.USERS_FILE, [])
-    admin = next(u for u in stored if u["username"] == "admin")
-    assert admin["password"].startswith(("pbkdf2:", "scrypt:"))
+    import db
+    from models import User
+
+    with db.session_scope() as session:
+        admin = session.get(User, "admin")
+        assert admin.password_hash.startswith(("pbkdf2:", "scrypt:"))

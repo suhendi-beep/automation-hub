@@ -15,28 +15,21 @@ const STATUS_STYLE    = {
 };
 
 /* ── API helpers ── */
-const apiGet    = ()            => fetch("/api/tasks").then(r => r.json());
+const PAGE_SIZE = 50;
+const buildQuery = (params) => new URLSearchParams(
+  Object.entries(params).filter(([, v]) => v !== "" && v !== null && v !== undefined)
+).toString();
+const apiPage = (params) => fetch(`/api/tasks?${buildQuery(params)}`).then(r => r.json());
+const apiAll  = (params = {}) => {
+  const qs = buildQuery(params);
+  return fetch(`/api/tasks${qs ? `?${qs}` : ""}`).then(r => r.json());
+};
 const apiCreate = (task)        => fetch("/api/tasks",            { method:"POST",   headers:{"Content-Type":"application/json"}, body:JSON.stringify(task)   }).then(r => r.json());
 const apiUpdate = (id, changes) => fetch(`/api/tasks/${id}`,      { method:"PUT",    headers:{"Content-Type":"application/json"}, body:JSON.stringify(changes)}).then(r => r.json());
 const apiDelete = (id)          => fetch(`/api/tasks/${id}`,      { method:"DELETE" }).then(r => r.json());
 const apiRequestDelete  = (id, user) => fetch(`/api/tasks/${id}/request-delete`,  { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(user)  }).then(r => r.json());
 const apiApproveDelete  = (id, action) => fetch(`/api/tasks/${id}/approve-delete`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action}) }).then(r => r.json());
 const apiPendingDeletes = ()    => fetch("/api/tasks/pending-deletes").then(r => r.json());
-
-function sortTasksNewestFirst(rows) {
-  return rows
-    .map((t, i) => ({ t, i }))
-    .sort((a, b) => {
-      const noA = Number.parseInt(String(a.t.taskNo || "").replace(/^TSK-/i, ""), 10);
-      const noB = Number.parseInt(String(b.t.taskNo || "").replace(/^TSK-/i, ""), 10);
-      if (Number.isFinite(noA) && Number.isFinite(noB) && noA !== noB) return noB - noA;
-      const timeA = Date.parse(a.t.createdAt || "") || 0;
-      const timeB = Date.parse(b.t.createdAt || "") || 0;
-      if (timeA !== timeB) return timeB - timeA;
-      return b.i - a.i;
-    })
-    .map(x => x.t);
-}
 
 /* ── One-time migration: DISABLED — data lama sudah dibersihkan ── */
 async function migrateLocalStorage() {
@@ -60,13 +53,24 @@ function exportCSV(tasks, label) {
 }
 
 /* ── Download Modal ── */
-function DownloadModal({ tasks, onClose }) {
+function DownloadModal({ onClose }) {
   const now  = new Date();
   const [month, setMonth] = useState(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`);
   const [mode,  setMode]  = useState("month");
+  const [rows,  setRows]  = useState([]);
+  const [busy,  setBusy]  = useState(true);
   const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-  const filtered  = mode==="all" ? tasks : tasks.filter(t=>(t.date||"").startsWith(month));
   const monthLabel= mode==="all" ? "all" : (()=>{ const [y,m]=month.split("-"); return `${MONTH_NAMES[parseInt(m)-1]}_${y}`; })();
+
+  useEffect(() => {
+    let cancelled = false;
+    setBusy(true);
+    apiAll(mode === "all" ? {} : { month })
+      .then(d => { if (!cancelled) setRows(Array.isArray(d) ? d : []); })
+      .catch(() => { if (!cancelled) setRows([]); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [mode, month]);
 
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={onClose}>
@@ -99,19 +103,19 @@ function DownloadModal({ tasks, onClose }) {
           )}
           <div style={{background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <span style={{fontSize:11,color:"var(--muted)"}}>Total tickets</span>
-            <span style={{fontSize:16,fontWeight:700,color:"var(--text2)"}}>{filtered.length}</span>
+            <span style={{fontSize:16,fontWeight:700,color:"var(--text2)"}}>{busy ? "…" : rows.length}</span>
           </div>
           <div style={{display:"flex",gap:8,marginBottom:16}}>
-            {[{label:"Close",val:filtered.filter(t=>t.status==="Close").length,c:"var(--green)"},{label:"In Progress",val:filtered.filter(t=>t.status==="In Progress").length,c:"var(--blue)"},{label:"Pending",val:filtered.filter(t=>t.status==="Pending").length,c:"var(--amber)"},{label:"Cancelled",val:filtered.filter(t=>t.status==="Cancelled").length,c:"var(--red)"}].map(s=>(
+            {[{label:"Close",val:rows.filter(t=>t.status==="Close").length,c:"var(--green)"},{label:"In Progress",val:rows.filter(t=>t.status==="In Progress").length,c:"var(--blue)"},{label:"Pending",val:rows.filter(t=>t.status==="Pending").length,c:"var(--amber)"},{label:"Cancelled",val:rows.filter(t=>t.status==="Cancelled").length,c:"var(--red)"}].map(s=>(
               <div key={s.label} style={{flex:1,textAlign:"center",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:6,padding:"6px 4px"}}>
                 <div style={{fontSize:15,fontWeight:700,color:s.c}}>{s.val}</div>
                 <div style={{fontSize:9,color:"var(--muted2)",marginTop:2}}>{s.label}</div>
               </div>
             ))}
           </div>
-          <button disabled={filtered.length===0} onClick={()=>{exportCSV(filtered,monthLabel);onClose();}} style={{width:"100%",background:filtered.length===0?"var(--surface2)":"var(--accent)",border:"none",borderRadius:6,color:filtered.length===0?"var(--muted)":"#fff",fontFamily:"inherit",fontSize:12,fontWeight:600,padding:"10px 0",cursor:filtered.length===0?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+          <button disabled={busy || rows.length===0} onClick={()=>{exportCSV(rows,monthLabel);onClose();}} style={{width:"100%",background:(busy||rows.length===0)?"var(--surface2)":"var(--accent)",border:"none",borderRadius:6,color:(busy||rows.length===0)?"var(--muted)":"#fff",fontFamily:"inherit",fontSize:12,fontWeight:600,padding:"10px 0",cursor:(busy||rows.length===0)?"not-allowed":"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
             <Icon name="download" size={12}/>
-            {filtered.length===0?"No data available":`Download CSV (${filtered.length} tickets)`}
+            {busy ? "Loading tickets…" : rows.length===0 ? "No data available" : `Download CSV (${rows.length} tickets)`}
           </button>
         </div>
       </div>
@@ -133,6 +137,12 @@ export default function DailyTask({ customers }) {
 
   const [tasks,          setTasks]          = useState([]);
   const [loading,        setLoading]        = useState(true);
+  const [page,           setPage]           = useState(1);
+  const [pages,          setPages]          = useState(1);
+  const [total,          setTotal]          = useState(0);
+  const [counts,         setCounts]         = useState({total:0,close:0,inProgress:0,pending:0,today:0});
+  const [allCustomers,   setAllCustomers]   = useState([]);
+  const [query,          setQuery]          = useState("");
   const [showModal,      setShowModal]      = useState(false);
   const [editId,         setEditId]         = useState(null);
   const [form,           setForm]           = useState(makeEmptyForm);
@@ -147,14 +157,31 @@ export default function DailyTask({ customers }) {
 
   const today = localISODate();
 
-  /* ── Load tasks dari API ── */
+  /* ── Load tasks dari API (server-side filter + pagination) ── */
   const loadTasks = useCallback(async () => {
     try {
-      const data = await apiGet();
-      setTasks(Array.isArray(data) ? sortTasksNewestFirst(data) : []);
+      const data = await apiPage({
+        page,
+        page_size: PAGE_SIZE,
+        date: filterDate,
+        q: query,
+        customer: filterCust,
+        status: filterSt,
+      });
+      if (data && Array.isArray(data.items)) {
+        setTasks(data.items);
+        setTotal(data.total || 0);
+        setPages(data.pages || 1);
+        if (data.counts) setCounts(data.counts);
+        if (Array.isArray(data.customers)) setAllCustomers(data.customers);
+      } else if (Array.isArray(data)) {
+        setTasks(data);
+        setTotal(data.length);
+        setPages(1);
+      }
     } catch(_) {}
     setLoading(false);
-  }, []);
+  }, [page, query, filterDate, filterCust, filterSt]);
 
   const loadPendingDeletes = useCallback(async () => {
     if (!isAdmin) return;
@@ -164,8 +191,18 @@ export default function DailyTask({ customers }) {
     } catch(_) {}
   }, [isAdmin]);
 
+  useEffect(() => { migrateLocalStorage(); }, []);
+
   useEffect(() => {
-    migrateLocalStorage().then(() => loadTasks());
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    loadTasks();
     loadPendingDeletes();
     const iv = setInterval(() => { loadTasks(); loadPendingDeletes(); }, 30000);
     return () => clearInterval(iv);
@@ -190,7 +227,8 @@ export default function DailyTask({ customers }) {
     }
     setShowModal(false);
     setEditId(null);
-    loadTasks();
+    if (editId) loadTasks();
+    else if (page === 1) loadTasks(); else setPage(1);
   };
 
   const handleDelete = async (id) => {
@@ -229,25 +267,15 @@ export default function DailyTask({ customers }) {
     setTasks(p => p.map(x => x.id===id ? {...x,status} : x));
   };
 
-  /* ── Filtered ── */
-  const query = search.trim().toLowerCase();
-  const filtered = tasks.filter(t => {
-    if (query) {
-      const hay = `${t.taskNo||""} ${t.customer||""} ${t.description||""} ${t.detail||""} ${t.pic||""} ${t.status||""} ${t.date||""}`.toLowerCase();
-      if (!hay.includes(query)) return false;
-    }
-    if (filterDate && t.date !== filterDate) return false;
-    if (filterCust && t.customer !== filterCust) return false;
-    if (filterSt   && t.status  !== filterSt)   return false;
-    return true;
-  });
-
-  const total      = tasks.length;
-  const done       = tasks.filter(t=>t.status==="Close").length;
-  const inProg     = tasks.filter(t=>t.status==="In Progress").length;
-  const pending    = tasks.filter(t=>t.status==="Pending").length;
-  const todayTasks = tasks.filter(t=>t.date===today).length;
-  const allCustomers = [...new Set(tasks.map(t=>t.customer).filter(Boolean))];
+  /* ── Server-side stats (all tickets, unaffected by table filters) ── */
+  const done       = counts.close;
+  const inProg     = counts.inProgress;
+  const pending    = counts.pending;
+  const todayTasks = counts.today;
+  const customerOptions = [...new Set([
+    ...customers.map(c => c.name),
+    ...allCustomers,
+  ].filter(Boolean))];
 
   return (
     <div style={T.root}>
@@ -287,7 +315,7 @@ export default function DailyTask({ customers }) {
       {/* ── STAT CARDS ── */}
       <div style={T.statRow}>
         {[
-          {label:"Total tickets",  val:total,      c:"var(--text)",   icon:"ticket"},
+          {label:"Total tickets",  val:counts.total, c:"var(--text)",   icon:"ticket"},
           {label:"Closed",         val:done,       c:"var(--green)",  icon:"checkCircle"},
           {label:"In progress",    val:inProg,     c:"var(--blue)",   icon:"clock"},
           {label:"Pending",        val:pending,    c:"var(--amber)",  icon:"warning"},
@@ -320,19 +348,21 @@ export default function DailyTask({ customers }) {
             <Icon name="close" size={11}/>
           </button>}
         </div>
-        <input type="date" style={T.filterInput} value={filterDate} onChange={e=>setFilterDate(e.target.value)}/>
-        <select style={T.filterInput} value={filterCust} onChange={e=>setFilterCust(e.target.value)}>
+        <input type="date" style={T.filterInput} value={filterDate} onChange={e=>{setFilterDate(e.target.value);setPage(1);}}/>
+        <select style={T.filterInput} value={filterCust} onChange={e=>{setFilterCust(e.target.value);setPage(1);}}>
           <option value="">All Customers</option>
-          {[...customers.map(c=>c.name),...allCustomers].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}
+          {customerOptions.map(c=><option key={c}>{c}</option>)}
         </select>
-        <select style={T.filterInput} value={filterSt} onChange={e=>setFilterSt(e.target.value)}>
+        <select style={T.filterInput} value={filterSt} onChange={e=>{setFilterSt(e.target.value);setPage(1);}}>
           <option value="">All Status</option>
           {STATUS_OPTIONS.map(s=><option key={s}>{s}</option>)}
         </select>
         {(search||filterDate||filterCust||filterSt) && (
-          <button style={T.clearFilterBtn} onClick={()=>{setSearch("");setFilterDate("");setFilterCust("");setFilterSt("");}}>× Clear</button>
+          <button style={T.clearFilterBtn} onClick={()=>{setSearch("");setFilterDate("");setFilterCust("");setFilterSt("");setPage(1);}}>× Clear</button>
         )}
-        <span style={{fontSize:10,color:"var(--muted3)",marginLeft:"auto"}}>{filtered.length} of {total} tickets</span>
+        <span style={{fontSize:10,color:"var(--muted3)",marginLeft:"auto"}}>
+          {total===0 ? 0 : (page-1)*PAGE_SIZE+1}–{Math.min(page*PAGE_SIZE, total)} of {total} tickets
+        </span>
       </div>
 
       {/* ── TABLE ── */}
@@ -349,11 +379,11 @@ export default function DailyTask({ customers }) {
               ))}</tr>
             </thead>
             <tbody>
-              {filtered.length===0 ? (
+              {tasks.length===0 ? (
                 <tr><td colSpan={9} style={{textAlign:"center",padding:"32px",color:"var(--muted3)",fontSize:12,fontStyle:"italic"}}>
-                  {tasks.length===0 ? 'No tickets yet — click "Create ticket" to add one' : "No tickets match the current filter"}
+                  {total===0 ? 'No tickets yet — click "Create ticket" to add one' : "No tickets match the current filter"}
                 </td></tr>
-              ) : filtered.map((t,i)=>(
+              ) : tasks.map((t,i)=>(
                 <tr key={t.id}
                   style={{background:i%2===0?"transparent":"var(--row-alt)",transition:"background .1s"}}
                   onMouseEnter={e=>e.currentTarget.style.background="var(--row-hover)"}
@@ -405,6 +435,18 @@ export default function DailyTask({ customers }) {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div style={T.pager}>
+        <span>Page {page} of {pages} · {PAGE_SIZE} tickets per page</span>
+        <div style={{display:"flex",gap:6}}>
+          <button style={{...T.pageBtn,opacity:page<=1?.45:1}} disabled={page<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>
+            <Icon name="arrowLeft" size={11}/> Previous
+          </button>
+          <button style={{...T.pageBtn,opacity:page>=pages?.45:1}} disabled={page>=pages} onClick={()=>setPage(p=>Math.min(pages,p+1))}>
+            Next <Icon name="chevronRight" size={11}/>
+          </button>
+        </div>
       </div>
 
       {/* ── CREATE/EDIT MODAL ── */}
@@ -504,7 +546,7 @@ export default function DailyTask({ customers }) {
         </div>
       )}
 
-      {showDownload && <DownloadModal tasks={tasks} onClose={()=>setShowDownload(false)}/>}
+      {showDownload && <DownloadModal onClose={()=>setShowDownload(false)}/>}
 
       {/* ── Pending Delete Requests Modal (admin only) ── */}
       {showPending && isAdmin && (
@@ -590,6 +632,10 @@ const T = {
   searchClear:{position:"absolute",right:4,display:"flex",alignItems:"center",background:"none",border:"none",color:"var(--muted2)",cursor:"pointer",padding:"2px 5px"},
   filterInput:{background:"var(--bg2)",border:"1px solid var(--border2)",color:"var(--text4)",fontFamily:"inherit",fontSize:11,padding:"5px 10px",borderRadius:5,outline:"none",cursor:"pointer"},
   clearFilterBtn:{background:"none",border:"1px solid var(--border2)",color:"var(--muted)",fontFamily:"inherit",fontSize:10,padding:"4px 10px",borderRadius:4,cursor:"pointer"},
+  pager:     {display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 24px 14px",flexShrink:0,
+              fontSize:10,color:"var(--muted3)",fontFamily:"var(--font)"},
+  pageBtn:   {display:"inline-flex",alignItems:"center",gap:5,background:"var(--surface2)",border:"1px solid var(--border2)",
+              color:"var(--text4)",fontFamily:"inherit",fontSize:10.5,fontWeight:600,padding:"5px 11px",borderRadius:5,cursor:"pointer"},
   tableWrap: {flex:1,overflowY:"auto",margin:"12px 24px 20px",background:"var(--bg2)",
               border:"1px solid var(--border)",borderRadius:12,boxShadow:"var(--shadow-card)"},
   table:     {width:"100%",borderCollapse:"collapse",tableLayout:"fixed"},

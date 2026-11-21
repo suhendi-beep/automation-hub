@@ -2036,6 +2036,7 @@ async function createTaskFromAlert(alert) {
   const pic      = sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "";
   const task     = {
     id:          `alert_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+    alertKey,
     customer:    folder,
     description: `[ALERT] ${shortName(alert.name)}${resource}`,
     date:        localISODate(),
@@ -2081,6 +2082,7 @@ async function syncAlertsToDailyTask(alerts) {
     const pic    = sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || "";
     await taskApiCreate({
       id:          `alert_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+      alertKey:    key,
       customer:    folder,
       description: desc,
       date:        localISODate(),
