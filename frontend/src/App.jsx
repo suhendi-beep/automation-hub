@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Dashboard    from "./pages/Dashboard.jsx";
 import GenerateReport from "./pages/GenerateReport.jsx";
 import DailyTask    from "./pages/DailyTask.jsx";
@@ -9,11 +9,9 @@ import AlertPage    from "./pages/AlertPage.jsx";
 import DailyReportPage from "./pages/DailyReportPage.jsx";
 import EngineerActivity from "./pages/EngineerActivity.jsx";
 import CustomersPage from "./pages/CustomersPage.jsx";
-import AccountsPage from "./pages/AccountsPage.jsx";
-import GrafanaPage from "./pages/GrafanaPage.jsx";
+import ManagementAccountsPage from "./pages/ManagementAccountsPage.jsx";
 import CredentialsPage from "./pages/CredentialsPage.jsx";
 import SchedulesPage from "./pages/SchedulesPage.jsx";
-import ActivityLogsPage from "./pages/ActivityLogsPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import ReminderNotif from "./components/ReminderNotif.jsx";
 import AlertWatcher  from "./components/AlertWatcher.jsx";
@@ -23,8 +21,8 @@ import Icon from "./components/Icon.jsx";
 import { clearSession } from "./api.js";
 import "./styles.css";
 
-// Auto-logout after this many ms of no user activity (mouse/keyboard/click/scroll).
-const IDLE_LOGOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
+// Hard session limit: 12 hours after login, regardless of activity.
+const SESSION_MS = 12 * 60 * 60 * 1000;
 
 const PAGE_META = {
   dashboard:           { group: "Monitoring",     label: "Dashboard" },
@@ -35,11 +33,9 @@ const PAGE_META = {
   files:               { group: "Workflow",       label: "Report History" },
   customer:            { group: "Workflow",       label: "Automation Jobs" },
   "engineer-activity": { group: "Insights",       label: "Engineer Activity" },
-  "logs-page":         { group: "Insights",       label: "Activity Logs" },
   schedules:           { group: "Platform",       label: "Schedules" },
-  grafana:             { group: "Platform",       label: "Grafana Dashboards" },
   customers:           { group: "Administration", label: "Customers" },
-  accounts:            { group: "Administration", label: "Accounts" },
+  "management-accounts":{ group: "Administration", label: "Management Accounts" },
   credentials:         { group: "Administration", label: "Credentials" },
   settings:            { group: "Administration", label: "Settings" },
 };
@@ -57,17 +53,15 @@ const NAV_GROUPS = [
   ]},
   { section: "Insights", items: [
     { key: "engineer-activity", icon: "activity", label: "Engineer Activity" },
-    { key: "logs-page",         icon: "logs",     label: "Activity Logs" },
   ]},
   { section: "Platform", items: [
     { key: "schedules", icon: "schedule", label: "Schedules" },
-    { key: "grafana",   icon: "grafana",  label: "Dashboards" },
   ]},
   { section: "Administration", items: [
-    { key: "customers",   icon: "users",    label: "Customers" },
-    { key: "accounts",    icon: "accounts", label: "Accounts" },
-    { key: "credentials", icon: "key",      label: "Credentials" },
-    { key: "settings",    icon: "settings", label: "Settings" },
+    { key: "customers",           icon: "users",    label: "Customers" },
+    { key: "management-accounts", icon: "accounts", label: "Management Accounts" },
+    { key: "credentials",         icon: "key",      label: "Credentials" },
+    { key: "settings",            icon: "settings", label: "Settings" },
   ]},
 ];
 
@@ -93,7 +87,12 @@ export default function App() {
   }, []);
 
   // ── Persist page state across browser refresh ──
-  const [page,     setPage]     = useState(() => sessionStorage.getItem("pr_page") || "dashboard");
+  const [page,     setPage]     = useState(() => {
+    let saved = sessionStorage.getItem("pr_page") || "dashboard";
+    if (saved === "accounts" || saved === "requests") saved = "management-accounts";
+    if (!PAGE_META[saved]) saved = "dashboard";
+    return saved;
+  });
   const [custId,   setCustId]   = useState(() => sessionStorage.getItem("pr_custid") || null);
   const [customers,setCustomers]= useState([]);
   const [ociSess,  setOciSess]  = useState(null);
@@ -117,37 +116,36 @@ export default function App() {
     return next;
   });
 
-  // ── Idle auto-logout: no user activity for IDLE_LOGOUT_MS → sign out. ──
+  // ── Session limit: force sign-out 12h after login, regardless of activity. ──
   React.useEffect(() => {
     if (!authed) return;
 
-    let idleTimer = null;
+    let started = 0;
+    try { started = Number(sessionStorage.getItem("pr_login_at")) || 0; } catch (_) {}
+    if (!started) {
+      started = Date.now();
+      try { sessionStorage.setItem("pr_login_at", String(started)); } catch (_) {}
+    }
 
-    const doLogout = () => {
+    const remaining = started + SESSION_MS - Date.now();
+    if (remaining <= 0) {
+      clearSession();
+      return;
+    }
+
+    const timer = setTimeout(() => {
       const u = sessionStorage.getItem("pr_user");
       const d = sessionStorage.getItem("pr_display");
       if (u) {
         fetch("/api/activity", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: u, display: d || u, action: "Logout", category: "auth", detail: "Auto-logout after 3h idle" }),
+          body: JSON.stringify({ username: u, display: d || u, action: "Logout", category: "auth", detail: "Auto-logout after 12h session" }),
         }).catch(() => {});
       }
       clearSession();
-    };
+    }, remaining);
 
-    const resetIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(doLogout, IDLE_LOGOUT_MS);
-    };
-
-    const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "click"];
-    activityEvents.forEach(ev => window.addEventListener(ev, resetIdleTimer, { passive: true }));
-    resetIdleTimer();
-
-    return () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      activityEvents.forEach(ev => window.removeEventListener(ev, resetIdleTimer));
-    };
+    return () => clearTimeout(timer);
   }, [authed]);
 
   // Midnight glass is the only theme.
@@ -218,6 +216,7 @@ export default function App() {
       <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0}}>
       <Topbar
         meta={meta} ociSess={ociSess} navigate={navigate}
+        currentRole={currentRole}
         collapsed={collapsed} onToggleCollapsed={toggleCollapsed}
       />
       <main className="app-main" style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minWidth:0}}>
@@ -230,11 +229,9 @@ export default function App() {
         {page==="customer"  && custId && <CustomerPage customerId={custId} navigate={navigate} ociSession={ociSess} running={running} setRunning={setRunning} statuses={statuses} setStatuses={setStatuses} logs={logs} setLogs={setLogs} activeLog={activeLog} setActiveLog={setActiveLog} darkMode={darkMode}/>}
         {page==="files"     && custId && <FilesPage customer={fullCust} navigate={navigate} darkMode={darkMode}/>}
         {page==="customers" && <CustomersPage navigate={navigate}/>}
-        {page==="accounts"  && <AccountsPage currentRole={currentRole}/>}
-        {page==="grafana"   && <GrafanaPage/>}
+        {page==="management-accounts" && <ManagementAccountsPage navigate={navigate}/>}
         {page==="credentials" && <CredentialsPage currentRole={currentRole} currentUser={currentUser} ociSession={ociSess} onOciChange={refreshOci}/>}
         {page==="schedules" && <SchedulesPage currentRole={currentRole}/>}
-        {page==="logs-page" && <ActivityLogsPage/>}
         {page==="settings"  && <SettingsPage currentUser={currentUser} currentRole={currentRole} displayName={displayName}/>}
       </main>
       </div>
@@ -301,10 +298,12 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
           <div key={g.section}>
             {!collapsed && <div style={SB.section}>{g.section}</div>}
             {collapsed && <div className="sb-rule" style={SB.rule}/>}
-            {g.items.map((it) => (
-              <NavItem key={it.key} icon={it.icon} label={it.label}
-                active={page === it.key} collapsed={collapsed} onClick={() => go(it.key)}/>
-            ))}
+            {g.items
+              .filter((it) => !it.adminOnly || currentRole === "admin")
+              .map((it) => (
+                <NavItem key={it.key} icon={it.icon} label={it.label}
+                  active={page === it.key} collapsed={collapsed} onClick={() => go(it.key)}/>
+              ))}
           </div>
         ))}
       </nav>
@@ -358,7 +357,7 @@ function Sidebar({ customers, page, navigate, custId, ociSess, onOciChange,
   );
 }
 
-function Topbar({ meta, ociSess, navigate, collapsed, onToggleCollapsed }) {
+function Topbar({ meta, ociSess, navigate, currentRole, collapsed, onToggleCollapsed }) {
   const [clock, setClock] = useState(fmtClock);
 
   useEffect(() => {
@@ -396,8 +395,143 @@ function Topbar({ meta, ociSess, navigate, collapsed, onToggleCollapsed }) {
             boxShadow: ociSess?.logged_in ? "0 0 0 3px var(--green-dim)" : "none"}}/>
           OCI {ociSess?.logged_in ? "connected" : "offline"}
         </button>
+        {currentRole === "admin" && <NotificationBell navigate={navigate}/>}
       </div>
     </header>
+  );
+}
+
+const FEATURE_LABEL = {
+  "engineer-activity": "Engineer Activity",
+  "account-management": "Management Accounts",
+};
+
+function fmtNotifDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-GB", {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function NotificationBell({ navigate }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const boxRef = useRef(null);
+
+  const load = () => {
+    setLoading(true);
+    fetch("/api/requests?status=pending")
+      .then(r => r.json())
+      .then(d => {
+        if (!Array.isArray(d)) throw new Error(d?.error || "Failed to load notifications");
+        setItems(d);
+        setError("");
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open]);
+
+  const openApprovals = () => {
+    try { sessionStorage.setItem("pr_mgmt_tab", "approvals"); } catch (_) {}
+    navigate("management-accounts");
+    setOpen(false);
+  };
+
+  const count = items.length;
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <button className="tb-icon"
+        style={{ ...TB.iconBtn, position: "relative", borderColor: open ? "var(--border2)" : "transparent" }}
+        onClick={() => { setOpen(v => !v); if (!open) load(); }}
+        title={count ? `${count} pending approval${count === 1 ? "" : "s"}` : "Notifications"}
+        aria-label="Notifications">
+        <Icon name="bell" size={16}/>
+        {count > 0 && (
+          <span style={{
+            position: "absolute", top: 2, right: 2, minWidth: 14, height: 14, padding: "0 3px",
+            borderRadius: 99, background: "var(--red)", color: "#fff", fontSize: 9, fontWeight: 700,
+            display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
+            border: "1px solid var(--bg2)",
+          }}>
+            {count > 99 ? "99+" : count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", right: 0, top: "calc(100% + 8px)", width: 320, maxHeight: 360,
+          overflow: "auto", background: "var(--bg2)", border: "1px solid var(--border2)",
+          borderRadius: 10, zIndex: 120, boxShadow: "0 16px 40px rgba(0,0,0,.45)",
+        }}>
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px",
+            borderBottom: "1px solid var(--border)", position: "sticky", top: 0, background: "var(--bg2)",
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--muted2)" }}>
+              Notifications
+            </span>
+            <span style={{ fontSize: 10, color: "var(--muted3)" }}>{count} pending</span>
+          </div>
+          {loading && items.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 11.5, color: "var(--muted)" }}>Loading…</div>
+          ) : error ? (
+            <div style={{ padding: 16, fontSize: 11.5, color: "var(--red)" }}>{error}</div>
+          ) : items.length === 0 ? (
+            <div style={{ padding: 20, fontSize: 11.5, color: "var(--muted)", textAlign: "center" }}>
+              No pending approvals
+            </div>
+          ) : (
+            items.map(it => (
+              <button key={it.id} onClick={openApprovals}
+                style={{
+                  display: "block", width: "100%", textAlign: "left", background: "transparent",
+                  border: "none", borderBottom: "1px solid var(--border)", padding: "10px 12px",
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>
+                <div style={{ fontSize: 11.5, color: "var(--text3)", fontWeight: 600 }}>
+                  {it.type === "password" ? "Password change" : "Access request"}
+                </div>
+                <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>
+                  {it.display || it.username}
+                  {it.type === "access" ? ` · ${FEATURE_LABEL[it.feature] || it.feature}` : ""}
+                </div>
+                <div style={{ fontSize: 9.5, color: "var(--muted3)", marginTop: 2 }}>
+                  {fmtNotifDate(it.requested_at)}
+                </div>
+              </button>
+            ))
+          )}
+          <button onClick={openApprovals}
+            style={{
+              display: "block", width: "100%", background: "transparent", border: "none",
+              padding: "10px 12px", cursor: "pointer", fontFamily: "inherit", fontSize: 11,
+              fontWeight: 600, color: "var(--accent)", textAlign: "center",
+            }}>
+            Open Management Accounts
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

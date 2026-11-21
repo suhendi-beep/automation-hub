@@ -1,6 +1,13 @@
 import React, { useState } from "react";
 import Icon from "./Icon.jsx";
 
+export const OCI_SIGNIN_URL = "https://www.oracle.com/cloud/sign-in.html?redirect_uri=https%3A%2F%2Fcloud.oracle.com%2F";
+
+const linkBtn = {
+  display: "inline-flex", alignItems: "center", gap: 6,
+  padding: "8px 14px", textDecoration: "none", fontFamily: "inherit", fontSize: 12,
+};
+
 export default function OciModal({ loggedIn, savedAt, onClose, onDone }) {
   const [json, setJson] = useState("");
   const [st, setSt] = useState("idle");
@@ -36,7 +43,7 @@ export default function OciModal({ loggedIn, savedAt, onClose, onDone }) {
       <div className="modal" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Icon name="cloud" size={15} /> OCI session
+            <Icon name="cloud" size={15} /> OCI Console
           </span>
           <button className="modal-close" onClick={onClose} aria-label="Close">
             <Icon name="close" size={14} />
@@ -48,14 +55,40 @@ export default function OciModal({ loggedIn, savedAt, onClose, onDone }) {
               <Icon name="checkCircle" size={14} /> Session active
             </div>
             {savedAt && <div className="oci-saved">Saved: {new Date(savedAt).toLocaleString()}</div>}
-            <button className="btn-danger" onClick={logout}>Disconnect</button>
+            <p className="modal-note" style={{ marginTop: 10 }}>
+              OCI links (Top SQL, DB Systems, Performance Hub) use the account signed in
+              to this browser. Sign in with your own Oracle Cloud account.
+            </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              <a className="btn-primary" href={OCI_SIGNIN_URL} target="_blank" rel="noreferrer" style={linkBtn}>
+                <Icon name="externalLink" size={13} /> Open OCI Console
+              </a>
+              <button className="btn-danger" onClick={logout}>Disconnect</button>
+            </div>
           </div>
         ) : (
           <div className="modal-body">
-            <p className="modal-note" style={{ fontWeight: 600 }}>How to connect OCI:</p>
+            <a className="btn-primary" href={OCI_SIGNIN_URL} target="_blank" rel="noreferrer"
+              style={{ ...linkBtn, width: "100%", justifyContent: "center" }}>
+              <Icon name="externalLink" size={13} /> Sign in to OCI with your account
+            </a>
+            <p className="modal-note" style={{ marginTop: 10 }}>
+              Opens the Oracle Cloud sign-in page in a new tab. Use your own account so
+              Top SQL and other OCI console links open with your session.
+            </p>
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+              <p className="modal-note" style={{ fontWeight: 600 }}>Browser sign-in vs app status</p>
+              <p className="modal-note" style={{ marginTop: 4 }}>
+                Signing in above only affects this browser (Top SQL and other OCI links).
+                The app status stays offline until the OCI session is connected below.
+              </p>
+            </div>
+            <p className="modal-note" style={{ fontWeight: 600, marginTop: 12 }}>
+              To run server-side OCI reports (weekly backup):
+            </p>
             <ol style={{ fontSize: 11, color: "var(--muted)", paddingLeft: 16, lineHeight: 2.2 }}>
+              <li>Sign in at the link above</li>
               <li>Install <strong style={{ color: "var(--text2)" }}>EditThisCookie</strong> in Chrome</li>
-              <li>Login at <a href="https://cloud.oracle.com" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>cloud.oracle.com</a></li>
               <li>Export cookies → Paste below</li>
             </ol>
             <label className="form-label">Cookies JSON</label>

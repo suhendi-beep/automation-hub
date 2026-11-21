@@ -1,6 +1,7 @@
 ﻿import React, { useState, useEffect, useRef } from "react";
 import Icon from "../components/Icon.jsx";
 import PageHeader from "../components/PageHeader.jsx";
+import OciCredModal from "../components/OciCredModal.jsx";
 import { logActivity } from "../activityLog.js";
 
 /* â”€â”€ WIB time helper â”€â”€ */
@@ -32,6 +33,7 @@ export default function GenerateReport({ customers, navigate }) {
   const [step,      setStep]      = useState("idle");
   const [resultMsg, setResultMsg] = useState("");
   const [logLines,  setLogLines]  = useState([]);
+  const [credModal, setCredModal] = useState(null); // { auto, args, dailyTaskId, taskId }
   const [custDetail,setCustDetail]= useState(null); // full customer with automations
   const logRef = useRef(null);
 
@@ -155,7 +157,7 @@ export default function GenerateReport({ customers, navigate }) {
           setStep("error"); clearInterval(iv);
         }
         // Poll OCI login state for creds flow
-        if (auto?.requires_oci_credentials) {
+        if (auto?.requires_oci_credentials && !credModal) {
           const ls = await fetch("/api/oci/login_state/"+taskId).then(r=>r.json());
           if (ls.state==="otp_required" && !otpModal && !otpSubmitted) setOtpModal(true);
           else if (["running","success"].includes(ls.state)) setOtpModal(false);
@@ -164,7 +166,7 @@ export default function GenerateReport({ customers, navigate }) {
       } catch(_){}
     }, 2500);
     return () => clearInterval(iv);
-  }, [taskId, step]);
+  }, [taskId, step, credModal]);
 
   const handleGenerate = async () => {
     // Jangan izinkan Generate Report baru jika masih ada proses berjalan.
@@ -215,6 +217,10 @@ export default function GenerateReport({ customers, navigate }) {
           const lg = await fetch(`/api/logs/${selCust}/${selAuto}`).then(r=>r.json());
           if (lg.logs) setLogLines(lg.logs);
         } catch (_) {}
+      } else if (d.need_credentials) {
+        // No OCI session on the server — ask this engineer to sign in with
+        // their own OCI account for this run.
+        setCredModal({ auto, args, dailyTaskId: createdTaskId });
       } else {
         // Don't leave an orphaned "In Progress" daily task behind.
         await fetch("/api/tasks/" + createdTaskId, {
@@ -229,6 +235,35 @@ export default function GenerateReport({ customers, navigate }) {
       setResultMsg(e.message || "Failed to start the automation.");
       setStep("error");
     }
+  };
+
+  const handleCredSubmit = async (creds) => {
+    try {
+      const d = await fetch("/api/run_with_credentials", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer: selCust, automation: selAuto, args, ...creds }),
+      }).then(r => r.json());
+      if (d.task_id) {
+        setTaskId(d.task_id);
+        setCredModal(m => m ? { ...m, taskId: d.task_id } : m);
+      } else {
+        setResultMsg(d.error || "Failed to start OCI login.");
+      }
+    } catch (e) {
+      setResultMsg(e.message || "Failed to start OCI login.");
+    }
+  };
+
+  const closeCredModal = () => {
+    const dt = credModal?.dailyTaskId;
+    if (dt && !credModal?.taskId) {
+      fetch("/api/tasks/" + dt, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "Cancelled", end: timeNowWIB() }),
+      }).catch(() => {});
+      setStep("idle");
+    }
+    setCredModal(null);
   };
 
   const handleOtpSubmit  = async () => {
@@ -420,6 +455,16 @@ export default function GenerateReport({ customers, navigate }) {
           </div>
         </div>
       </div>
+
+      {/* ── OCI credentials (per-engineer account) ── */}
+      {credModal && (
+        <OciCredModal
+          auto={credModal.auto}
+          taskId={credModal.taskId}
+          onSubmit={handleCredSubmit}
+          onClose={closeCredModal}
+        />
+      )}
 
       {/* ── OTP Modal ── */}
       {otpModal && (

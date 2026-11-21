@@ -219,6 +219,13 @@ def _now():
 # ══════════════════════════════════════════════════════════════
 USERS_FILE = _shared("logs", "users.json")
 ACTIVITY_FILE = _shared("logs", "activity_log.json")
+REQUESTS_FILE = _shared("logs", "requests.json")
+
+# Fitur yang bisa diminta aksesnya oleh engineer (approval oleh admin).
+FEATURES = {
+    "engineer-activity": "Engineer Activity",
+    "account-management": "Management Accounts",
+}
 
 
 def _hash_password(password):
@@ -233,6 +240,68 @@ def _verify_password(stored, password):
     if _is_hashed(stored):
         return check_password_hash(stored, password)
     return secrets.compare_digest(stored, password)
+
+
+def _password_policy_error(password):
+    password = password or ""
+    if len(password) < 6:
+        return "Password must be at least 6 characters"
+    if not re.search(r"[A-Z]", password):
+        return "Password must contain an uppercase letter"
+    if not re.search(r"[a-z]", password):
+        return "Password must contain a lowercase letter"
+    if not re.search(r"\d", password):
+        return "Password must contain a number"
+    if not re.search(r"[^A-Za-z0-9]", password):
+        return "Password must contain a symbol"
+    return ""
+
+
+def _user_features(user):
+    if not user:
+        return []
+    if user.get("role") == "admin":
+        return list(FEATURES.keys())
+    return [f for f in (user.get("features") or []) if f in FEATURES]
+
+
+def _load_requests():
+    raw = _read_json(REQUESTS_FILE, [])
+    return raw if isinstance(raw, list) else []
+
+
+def _save_requests(items):
+    _write_json(REQUESTS_FILE, items[-500:])
+
+
+def _public_request(req):
+    return {
+        "id":           req.get("id"),
+        "type":         req.get("type"),
+        "username":     req.get("username"),
+        "display":      req.get("display", req.get("username")),
+        "feature":      req.get("feature"),
+        "status":       req.get("status", "pending"),
+        "requested_at": req.get("requested_at"),
+        "reviewed_at":  req.get("reviewed_at"),
+        "reviewed_by":  req.get("reviewed_by"),
+    }
+
+
+def _queue_request(req):
+    """Insert a request, replacing any pending request of the same kind/user."""
+    with _FILE_LOCK:
+        items = [
+            r for r in _load_requests()
+            if not (
+                r.get("status") == "pending"
+                and r.get("type") == req["type"]
+                and r.get("username") == req["username"]
+                and r.get("feature") == req.get("feature")
+            )
+        ]
+        items.append(req)
+        _save_requests(items)
 
 
 def _default_users():
@@ -308,7 +377,7 @@ def _clear_login_failures(ip):
         _login_attempts.pop(ip, None)
 
 
-PUBLIC_ENDPOINTS = {"/api/ping", "/api/auth/login"}
+PUBLIC_ENDPOINTS = {"/api/ping", "/api/auth/login", "/api/auth/forgot-password"}
 
 
 @app.before_request
@@ -340,6 +409,7 @@ def require_auth():
         "username": user["username"],
         "display": user.get("display", user["username"]),
         "role": user.get("role", "engineer"),
+        "features": _user_features(user),
     }
     return None
 
@@ -348,6 +418,14 @@ def _admin_only():
     if g.user.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
     return None
+
+
+def _admin_or_feature(feature):
+    if g.user.get("role") == "admin":
+        return None
+    if feature in (g.user.get("features") or []):
+        return None
+    return jsonify({"error": "Access denied. Request access from an admin."}), 403
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1811,6 +1889,7 @@ def _public_user(user):
         "username": user["username"],
         "display": user.get("display", user["username"]),
         "role": user.get("role", "engineer"),
+        "features": _user_features(user),
     }
 
 
@@ -1900,22 +1979,189 @@ def delete_user(username):
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/auth/me")
+def auth_me():
+    user = _find_user(g.user["username"])
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(_public_user(user))
+
+
 @app.route("/api/auth/change-password", methods=["POST"])
 def change_password():
     data = request.json or {}
     current = data.get("current_password", "")
     new = data.get("new_password", "")
-    if len(new) < 8:
-        return jsonify({"error": "New password must be at least 8 characters"}), 400
+    err = _password_policy_error(new)
+    if err:
+        return jsonify({"error": err}), 400
 
     with _FILE_LOCK:
         users = _load_users()
         user = next((u for u in users if u["username"] == g.user["username"]), None)
         if not user or not _verify_password(user.get("password", ""), current):
             return jsonify({"error": "Current password is incorrect"}), 400
-        user["password"] = _hash_password(new)
-        _save_users(users)
-    return jsonify({"status": "ok", "token": _issue_token(user)})
+
+        # Admin berganti password langsung; engineer harus lewat approval admin.
+        if user.get("role") == "admin":
+            user["password"] = _hash_password(new)
+            _save_users(users)
+            token = _issue_token(user)
+        else:
+            token = None
+
+    if user.get("role") != "admin":
+        _queue_request({
+            "id":           _now().strftime("%Y%m%d%H%M%S%f"),
+            "type":         "password",
+            "username":     user["username"],
+            "display":      user.get("display", user["username"]),
+            "password_hash": _hash_password(new),
+            "status":       "pending",
+            "requested_at": _now().isoformat(),
+        })
+        return jsonify({
+            "status": "pending",
+            "message": "Password change request sent. An admin must approve it.",
+        })
+    return jsonify({"status": "ok", "token": token})
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    new = data.get("new_password", "")
+    err = _password_policy_error(new)
+    if err:
+        return jsonify({"error": err}), 400
+
+    with _FILE_LOCK:
+        user = next((u for u in _load_users() if u["username"] == username), None)
+    if user:
+        _queue_request({
+            "id":           _now().strftime("%Y%m%d%H%M%S%f"),
+            "type":         "password",
+            "username":     user["username"],
+            "display":      user.get("display", user["username"]),
+            "password_hash": _hash_password(new),
+            "status":       "pending",
+            "requested_at": _now().isoformat(),
+        })
+    # Jangan bocorkan apakah username terdaftar atau tidak.
+    return jsonify({
+        "ok": True,
+        "message": "Password reset request sent. An admin must approve it.",
+    })
+
+
+@app.route("/api/access-requests", methods=["POST"])
+def request_access():
+    data = request.json or {}
+    feature = data.get("feature") or ""
+    if feature not in FEATURES:
+        return jsonify({"error": "Unknown feature"}), 400
+
+    user = _find_user(g.user["username"])
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if feature in _user_features(user):
+        return jsonify({"error": "You already have access to this feature"}), 409
+
+    _queue_request({
+        "id":           _now().strftime("%Y%m%d%H%M%S%f"),
+        "type":         "access",
+        "username":     user["username"],
+        "display":      user.get("display", user["username"]),
+        "feature":      feature,
+        "status":       "pending",
+        "requested_at": _now().isoformat(),
+    })
+    return jsonify({"status": "pending", "message": "Access request sent for admin approval."})
+
+
+@app.route("/api/requests/mine")
+def my_requests():
+    items = [
+        _public_request(r) for r in _load_requests()
+        if r.get("username") == g.user["username"]
+    ]
+    items.sort(key=lambda r: r.get("requested_at") or "", reverse=True)
+    return jsonify(items)
+
+
+@app.route("/api/requests")
+def list_requests():
+    denied = _admin_or_feature("account-management")
+    if denied:
+        return denied
+    status = request.args.get("status", "pending")
+    items = [_public_request(r) for r in _load_requests()]
+    if status != "all":
+        items = [r for r in items if r["status"] == status]
+    items.sort(key=lambda r: r.get("requested_at") or "", reverse=True)
+    return jsonify(items)
+
+
+@app.route("/api/requests/<request_id>/approve", methods=["POST"])
+def approve_request(request_id):
+    denied = _admin_or_feature("account-management")
+    if denied:
+        return denied
+
+    with _FILE_LOCK:
+        items = _load_requests()
+        req = next((r for r in items if r.get("id") == request_id), None)
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+        if req.get("status") != "pending":
+            return jsonify({"error": "Request already reviewed"}), 409
+        if g.user.get("role") != "admin" and req.get("username") == g.user["username"]:
+            return jsonify({"error": "You cannot approve your own request"}), 403
+
+        users = _load_users()
+        user = next((u for u in users if u["username"] == req.get("username")), None)
+        if not user:
+            return jsonify({"error": "User no longer exists"}), 404
+
+        if req.get("type") == "password":
+            user["password"] = req.get("password_hash") or user.get("password")
+            _save_users(users)
+        elif req.get("type") == "access":
+            feature = req.get("feature")
+            if feature in FEATURES:
+                feats = user.setdefault("features", [])
+                if feature not in feats:
+                    feats.append(feature)
+                _save_users(users)
+        else:
+            return jsonify({"error": "Unknown request type"}), 400
+
+        req["status"] = "approved"
+        req["reviewed_at"] = _now().isoformat()
+        req["reviewed_by"] = g.user["username"]
+        _save_requests(items)
+    return jsonify(_public_request(req))
+
+
+@app.route("/api/requests/<request_id>/reject", methods=["POST"])
+def reject_request(request_id):
+    denied = _admin_or_feature("account-management")
+    if denied:
+        return denied
+
+    with _FILE_LOCK:
+        items = _load_requests()
+        req = next((r for r in items if r.get("id") == request_id), None)
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+        if req.get("status") != "pending":
+            return jsonify({"error": "Request already reviewed"}), 409
+        req["status"] = "rejected"
+        req["reviewed_at"] = _now().isoformat()
+        req["reviewed_by"] = g.user["username"]
+        _save_requests(items)
+    return jsonify(_public_request(req))
 
 
 @app.route("/api/activity", methods=["GET"])
@@ -1965,12 +2211,15 @@ ACCOUNTS_FILE = _shared("accounts.json")
 
 @app.route("/api/accounts", methods=["GET"])
 def list_accounts():
+    denied = _admin_or_feature("account-management")
+    if denied:
+        return denied
     return jsonify(_read_json(ACCOUNTS_FILE, []))
 
 
 @app.route("/api/accounts", methods=["POST"])
 def create_account():
-    denied = _admin_only()
+    denied = _admin_or_feature("account-management")
     if denied:
         return denied
     data = request.json or {}
@@ -1995,7 +2244,7 @@ def create_account():
 
 @app.route("/api/accounts/<account_id>", methods=["PUT"])
 def update_account(account_id):
-    denied = _admin_only()
+    denied = _admin_or_feature("account-management")
     if denied:
         return denied
     data = request.json or {}
@@ -2013,7 +2262,7 @@ def update_account(account_id):
 
 @app.route("/api/accounts/<account_id>", methods=["DELETE"])
 def delete_account(account_id):
-    denied = _admin_only()
+    denied = _admin_or_feature("account-management")
     if denied:
         return denied
     with _FILE_LOCK:
@@ -2093,6 +2342,7 @@ def auth_login():
         "display": user.get("display", user["username"].upper()),
         "display_name": user.get("display", user["username"].upper()),
         "role": user.get("role", "engineer"),
+        "features": _user_features(user),
     })
 
 

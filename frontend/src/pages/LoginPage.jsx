@@ -94,6 +94,13 @@ export default function LoginPage({ onLogin }) {
   const [error,     setError]     = useState("");
   const [loading,   setLoading]   = useState(false);
 
+  // Forgot-password request (engineer submits, admin approves).
+  const [showReset,    setShowReset]    = useState(false);
+  const [resetForm,    setResetForm]    = useState({ username: "", password: "", confirm: "" });
+  const [resetError,   setResetError]   = useState("");
+  const [resetInfo,    setResetInfo]    = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true); setError("");
@@ -115,6 +122,8 @@ export default function LoginPage({ onLogin }) {
         sessionStorage.setItem("pr_user",    data.username);
         sessionStorage.setItem("pr_display", data.display);
         sessionStorage.setItem("pr_role",    data.role);
+        sessionStorage.setItem("pr_features", JSON.stringify(data.features || []));
+        sessionStorage.setItem("pr_login_at", String(Date.now()));
         fetch("/api/activity", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -134,6 +143,49 @@ export default function LoginPage({ onLogin }) {
     setLoading(false);
   };
 
+  const passwordPolicyError = (pw) => {
+    if (pw.length < 6) return "Password must be at least 6 characters.";
+    if (!/[A-Z]/.test(pw)) return "Password must contain an uppercase letter.";
+    if (!/[a-z]/.test(pw)) return "Password must contain a lowercase letter.";
+    if (!/\d/.test(pw)) return "Password must contain a number.";
+    if (!/[^A-Za-z0-9]/.test(pw)) return "Password must contain a symbol.";
+    return "";
+  };
+
+  const handleForgot = async (e) => {
+    e.preventDefault();
+    setResetError(""); setResetInfo("");
+    if (resetForm.password !== resetForm.confirm) {
+      setResetError("New password and confirmation do not match.");
+      return;
+    }
+    const policyErr = passwordPolicyError(resetForm.password);
+    if (policyErr) { setResetError(policyErr); return; }
+    setResetLoading(true);
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: resetForm.username.trim(), new_password: resetForm.password }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "Failed to send the request.");
+      setResetInfo(d.message || "Password reset request sent. An admin must approve it.");
+      setResetForm((f) => ({ ...f, password: "", confirm: "" }));
+    } catch (err) {
+      setResetError(err.message);
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const openReset = () => {
+    setResetForm({ username, password: "", confirm: "" });
+    setResetError(""); setResetInfo("");
+    setError("");
+    setShowReset(true);
+  };
+
   return (
     <div style={L.root}>
       {/* ── Left: sign-in ── */}
@@ -148,62 +200,126 @@ export default function LoginPage({ onLogin }) {
 
         <div style={L.formBody}>
           <div style={L.formInner}>
-            <h1 style={L.heading}>Sign <span className="hl">in</span></h1>
-            <p style={L.subheading}>
-              Use your operations account to access the reporting and alert console.
-            </p>
+            {showReset ? (
+              <>
+                <h1 style={L.heading}>Reset <span className="hl">password</span></h1>
+                <p style={L.subheading}>
+                  Submit a new password request. An admin must approve it before it takes effect.
+                </p>
 
-            <form onSubmit={handleSubmit} style={L.form} noValidate>
-              <div style={L.fieldGroup}>
-                <label style={L.label} htmlFor="username">Username</label>
-                <GlassInput id="username" type="text" value={username}
-                  onChange={e=>setUsername(e.target.value)}
-                  autoFocus autoComplete="username" placeholder="e.g. engineer.name"/>
-              </div>
+                <form onSubmit={handleForgot} style={L.form} noValidate>
+                  <div style={L.fieldGroup}>
+                    <label style={L.label} htmlFor="reset-username">Username</label>
+                    <GlassInput id="reset-username" type="text" value={resetForm.username}
+                      onChange={e=>setResetForm(f=>({...f, username:e.target.value}))}
+                      autoFocus autoComplete="username" placeholder="Your username"/>
+                  </div>
+                  <div style={L.fieldGroup}>
+                    <label style={L.label} htmlFor="reset-password">New password</label>
+                    <GlassInput id="reset-password" type="password" value={resetForm.password}
+                      onChange={e=>setResetForm(f=>({...f, password:e.target.value}))}
+                      autoComplete="new-password" placeholder="Min. 6 chars, A-Z, 0-9, symbol"/>
+                  </div>
+                  <div style={L.fieldGroup}>
+                    <label style={L.label} htmlFor="reset-confirm">Confirm new password</label>
+                    <GlassInput id="reset-confirm" type="password" value={resetForm.confirm}
+                      onChange={e=>setResetForm(f=>({...f, confirm:e.target.value}))}
+                      autoComplete="new-password" placeholder="Repeat the new password"/>
+                  </div>
 
-              <div style={L.fieldGroup}>
-                <label style={L.label} htmlFor="password">Password</label>
-                <div style={{position:"relative"}}>
-                  <GlassInput id="password" style={{paddingRight:42}}
-                    type={showPwd?"text":"password"} value={password}
-                    onChange={e=>setPassword(e.target.value)}
-                    autoComplete="current-password" placeholder="Enter your password"/>
-                  <button type="button" onClick={()=>setShowPwd(v=>!v)}
-                    aria-label={showPwd ? "Hide password" : "Show password"}
-                    style={L.eyeBtn}>
-                    <Icon name={showPwd ? "eyeOff" : "eye"} size={15}/>
+                  {resetError && (
+                    <div style={L.errBox}>
+                      <Icon name="warning" size={14}/>
+                      <span>{resetError}</span>
+                    </div>
+                  )}
+                  {resetInfo && (
+                    <div style={{...L.errBox, color:"var(--green)", borderColor:"var(--border2)"}}>
+                      <Icon name="checkCircle" size={14}/>
+                      <span>{resetInfo}</span>
+                    </div>
+                  )}
+
+                  <GlassButton type="submit" variant="primary" style={{
+                    width:"100%", padding:"12px", fontSize:13, marginTop:3,
+                    opacity:(resetLoading||!resetForm.username||!resetForm.password||!resetForm.confirm)?.45:1,
+                    cursor:(resetLoading||!resetForm.username||!resetForm.password||!resetForm.confirm)?"not-allowed":"pointer",
+                  }} disabled={resetLoading||!resetForm.username||!resetForm.password||!resetForm.confirm}>
+                    {resetLoading
+                      ? <><span className="spinner" style={{width:13,height:13,borderWidth:1.6}}/> Sending…</>
+                      : <>Send reset request <Icon name="arrowRight" size={14}/></>}
+                  </GlassButton>
+
+                  <button type="button" onClick={()=>{ setShowReset(false); setResetError(""); setResetInfo(""); }}
+                    style={L.textBtn}>
+                    Back to sign in
                   </button>
-                </div>
-              </div>
+                </form>
+              </>
+            ) : (
+              <>
+                <h1 style={L.heading}>Sign <span className="hl">in</span></h1>
+                <p style={L.subheading}>
+                  Use your operations account to access the reporting and alert console.
+                </p>
 
-              {error && (
-                <div style={L.errBox}>
-                  <Icon name="warning" size={14}/>
-                  <span>{error}</span>
-                </div>
-              )}
+                <form onSubmit={handleSubmit} style={L.form} noValidate>
+                  <div style={L.fieldGroup}>
+                    <label style={L.label} htmlFor="username">Username</label>
+                    <GlassInput id="username" type="text" value={username}
+                      onChange={e=>setUsername(e.target.value)}
+                      autoFocus autoComplete="username" placeholder="e.g. engineer.name"/>
+                  </div>
 
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <input
-                  id="remember-me"
-                  type="checkbox"
-                  checked={remember}
-                  onChange={e => setRemember(e.target.checked)}
-                  style={{width:14,height:14,cursor:"pointer",accentColor:"var(--accent)"}}
-                />
-                <label htmlFor="remember-me" style={L.rememberLabel}>Remember username</label>
-              </div>
+                  <div style={L.fieldGroup}>
+                    <label style={L.label} htmlFor="password">Password</label>
+                    <div style={{position:"relative"}}>
+                      <GlassInput id="password" style={{paddingRight:42}}
+                        type={showPwd?"text":"password"} value={password}
+                        onChange={e=>setPassword(e.target.value)}
+                        autoComplete="current-password" placeholder="Enter your password"/>
+                      <button type="button" onClick={()=>setShowPwd(v=>!v)}
+                        aria-label={showPwd ? "Hide password" : "Show password"}
+                        style={L.eyeBtn}>
+                        <Icon name={showPwd ? "eyeOff" : "eye"} size={15}/>
+                      </button>
+                    </div>
+                  </div>
 
-              <GlassButton type="submit" variant="primary" style={{
-                width:"100%", padding:"12px", fontSize:13, marginTop:3,
-                opacity:(loading||!username||!password)?.45:1,
-                cursor:(loading||!username||!password)?"not-allowed":"pointer",
-              }} disabled={loading||!username||!password}>
-                {loading
-                  ? <><span className="spinner" style={{width:13,height:13,borderWidth:1.6}}/> Signing in…</>
-                  : <>Sign in <Icon name="arrowRight" size={14}/></>}
-              </GlassButton>
-            </form>
+                  {error && (
+                    <div style={L.errBox}>
+                      <Icon name="warning" size={14}/>
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <input
+                      id="remember-me"
+                      type="checkbox"
+                      checked={remember}
+                      onChange={e => setRemember(e.target.checked)}
+                      style={{width:14,height:14,cursor:"pointer",accentColor:"var(--accent)"}}
+                    />
+                    <label htmlFor="remember-me" style={L.rememberLabel}>Remember username</label>
+                  </div>
+
+                  <GlassButton type="submit" variant="primary" style={{
+                    width:"100%", padding:"12px", fontSize:13, marginTop:3,
+                    opacity:(loading||!username||!password)?.45:1,
+                    cursor:(loading||!username||!password)?"not-allowed":"pointer",
+                  }} disabled={loading||!username||!password}>
+                    {loading
+                      ? <><span className="spinner" style={{width:13,height:13,borderWidth:1.6}}/> Signing in…</>
+                      : <>Sign in <Icon name="arrowRight" size={14}/></>}
+                  </GlassButton>
+
+                  <button type="button" onClick={openReset} style={L.textBtn}>
+                    Forgot password?
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </div>
 
@@ -281,6 +397,8 @@ const L = {
                background:"rgba(251,113,133,.1)",color:"var(--red)",
                border:"1px solid rgba(251,113,133,.3)",padding:"10px 12px",borderRadius:10},
   rememberLabel:{fontSize:11.5,color:"var(--muted)",cursor:"pointer",userSelect:"none"},
+  textBtn:    {background:"none",border:"none",color:"var(--rose)",fontSize:11.5,
+               cursor:"pointer",padding:0,alignSelf:"center",fontFamily:"inherit"},
   submitBtn:  {background:"var(--accent-grad)",color:"#fff",border:"1px solid rgba(255,255,255,.14)",
                fontFamily:"inherit",fontSize:13,fontWeight:600,padding:"12px",borderRadius:10,
                display:"flex",alignItems:"center",justifyContent:"center",gap:8,

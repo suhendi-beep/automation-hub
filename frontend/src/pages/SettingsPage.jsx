@@ -34,9 +34,13 @@ export default function SettingsPage({ currentUser, currentRole, displayName }) 
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Failed to change password");
-      if (d.token) sessionStorage.setItem("pr_token", d.token);
       setForm({ current_password: "", new_password: "", confirm: "" });
-      setSuccess("Password changed. Other sessions will be logged out.");
+      if (d.status === "pending") {
+        setSuccess("Request sent. An admin must approve the new password before it takes effect.");
+      } else {
+        if (d.token) sessionStorage.setItem("pr_token", d.token);
+        setSuccess("Password changed. Other sessions will be logged out.");
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -119,13 +123,14 @@ export default function SettingsPage({ currentUser, currentRole, displayName }) 
           <button
             type="submit"
             style={btnPrimary}
-            disabled={saving || form.new_password.length < 8 || !form.current_password}
+            disabled={saving || form.new_password.length < 6 || !form.current_password}
           >
             {saving ? "Saving…" : "Update"}
           </button>
         </form>
         <div style={{ fontSize: 10, color: "var(--muted2)", marginTop: 8 }}>
-          Minimum 8 characters. Changing your password invalidates existing tokens.
+          Min. 6 characters with uppercase, lowercase, number, and symbol. Admin changes apply immediately;
+          engineer changes are queued for admin approval.
         </div>
       </div>
 

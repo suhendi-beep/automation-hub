@@ -184,9 +184,12 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
 }
 
 export default function EngineerActivity({ navigate }) {
-  const role    = sessionStorage.getItem("pr_role") || "engineer";
-  const user    = sessionStorage.getItem("pr_user") || "admin";
-  const isAdmin = role === "admin" || user === "admin";
+  const role = sessionStorage.getItem("pr_role") || "engineer";
+
+  // "checking" → "granted" | "denied" | "pending"
+  const [access,       setAccess]       = useState("checking");
+  const [requestBusy,  setRequestBusy]  = useState(false);
+  const [requestError, setRequestError] = useState("");
 
   const [logs,       setLogs]       = useState([]);
   const [loading,    setLoading]    = useState(false);
@@ -196,6 +199,48 @@ export default function EngineerActivity({ navigate }) {
   const [filterTo,   setFilterTo]   = useState("");
   const [filterCat,  setFilterCat]  = useState("");
   const [tab,        setTab]        = useState("kpi"); // "kpi" | "log"
+
+  // Akses diverifikasi ke backend supaya approval admin langsung berlaku.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await fetch("/api/auth/me").then(r => r.json());
+        const granted = me.role === "admin" || (me.features || []).includes("engineer-activity");
+        if (granted) {
+          if (!cancelled) setAccess("granted");
+          return;
+        }
+        const mine = await fetch("/api/requests/mine").then(r => r.json());
+        const pending = Array.isArray(mine) && mine.some(
+          r => r.type === "access" && r.feature === "engineer-activity" && r.status === "pending"
+        );
+        if (!cancelled) setAccess(pending ? "pending" : "denied");
+      } catch (_) {
+        if (!cancelled) setAccess("denied");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const requestAccess = async () => {
+    setRequestBusy(true);
+    setRequestError("");
+    try {
+      const res = await fetch("/api/access-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: "engineer-activity" }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "Failed to send the request");
+      setAccess("pending");
+    } catch (e) {
+      setRequestError(e.message);
+    } finally {
+      setRequestBusy(false);
+    }
+  };
 
   const today        = new Date().toISOString().slice(0, 10);
   const firstOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
@@ -208,9 +253,9 @@ export default function EngineerActivity({ navigate }) {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (access !== "granted") return;
     loadLogs();
-  }, [filterUser, filterFrom, filterTo, isAdmin]);
+  }, [filterUser, filterFrom, filterTo, access]);
 
   const loadLogs = () => {
     setLoading(true);
@@ -238,8 +283,9 @@ export default function EngineerActivity({ navigate }) {
 
   const engineers = users.filter(u => u.role === "engineer");
 
-  // ── Access Denied ──
-  if (!isAdmin) {
+  // ── Access check ──
+  if (access !== "granted") {
+    const pending = access === "pending";
     return (
       <div style={{
         flex: 1, display: "flex", flexDirection: "column",
@@ -248,16 +294,33 @@ export default function EngineerActivity({ navigate }) {
         gap: 16, padding: 40, textAlign: "center",
       }}>
         <div style={{ color: "var(--border3)" }}><Icon name="lock" size={40}/></div>
-        <div style={{ fontSize: 18, fontWeight: 650, color: "var(--text)" }}>Access restricted</div>
-        <div style={{ fontSize: 13, color: "var(--muted)", maxWidth: 380, lineHeight: 1.7 }}>
-          You do not have permission to view Engineer Activity logs.
-          This feature is only accessible by administrators.
-          Please contact your admin to request access.
+        <div style={{ fontSize: 18, fontWeight: 650, color: "var(--text)" }}>
+          {pending ? "Access request pending" : "Access restricted"}
         </div>
-        <button onClick={() => navigate("dashboard")} className="btn-primary"
-          style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Icon name="arrowLeft" size={12}/> Back to dashboard
-        </button>
+        <div style={{ fontSize: 13, color: "var(--muted)", maxWidth: 400, lineHeight: 1.7 }}>
+          {pending
+            ? "Your request is waiting for admin approval. You will get access after it is approved."
+            : "Engineer Activity is restricted to administrators. You can request access and an admin will review it."}
+        </div>
+        {requestError && (
+          <div style={{ fontSize: 12, color: "var(--red)" }}>{requestError}</div>
+        )}
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button onClick={() => navigate("dashboard")} style={{
+            background: "var(--bg2)", border: "1px solid var(--border2)",
+            borderRadius: 7, color: "var(--text4)", fontSize: 12, padding: "8px 14px",
+            cursor: "pointer", fontFamily: "inherit", display: "inline-flex",
+            alignItems: "center", gap: 6,
+          }}>
+            <Icon name="arrowLeft" size={12}/> Dashboard
+          </button>
+          {!pending && access !== "checking" && (
+            <button onClick={requestAccess} className="btn-primary" disabled={requestBusy}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px" }}>
+              <Icon name="mail" size={12}/> {requestBusy ? "Sending…" : "Request access"}
+            </button>
+          )}
+        </div>
       </div>
     );
   }

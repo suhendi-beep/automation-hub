@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import PageShell, {
   btn, btnPrimary, btnDanger, input, label, card, table, th, td, badge, ErrorBox, fmtDate,
 } from "../components/PageShell.jsx";
-import OciModal from "../components/OciModal.jsx";
+import OciModal, { OCI_SIGNIN_URL } from "../components/OciModal.jsx";
 import Icon from "../components/Icon.jsx";
 
 export default function CredentialsPage({ currentRole, currentUser, ociSession, onOciChange }) {
@@ -113,11 +113,15 @@ export default function CredentialsPage({ currentRole, currentUser, ociSession, 
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
                 {ociSession?.logged_in
                   ? `Connected — ${ociSession.count || 0} cookies, saved ${fmtDate(ociSession.saved_at)}`
-                  : "Not connected. Backup automations requiring OCI login will be blocked."}
+                  : "Not connected. Sign in with your own OCI account, then connect the session for server-side automations."}
               </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
+            <a href={OCI_SIGNIN_URL} target="_blank" rel="noreferrer"
+              style={{ ...btn, display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none" }}>
+              <Icon name="externalLink" size={12}/> Login OCI
+            </a>
             {ociSession?.logged_in ? (
               <>
                 <button style={btn} onClick={() => setShowOci(true)}><Icon name="settings" size={12}/> Manage</button>

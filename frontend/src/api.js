@@ -1,4 +1,4 @@
-const SESSION_KEYS = ["pr_auth", "pr_user", "pr_display", "pr_role", "pr_token"];
+const SESSION_KEYS = ["pr_auth", "pr_user", "pr_display", "pr_role", "pr_token", "pr_features", "pr_login_at"];
 
 export function clearSession() {
   SESSION_KEYS.forEach((k) => {
