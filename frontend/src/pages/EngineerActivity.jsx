@@ -141,7 +141,7 @@ function EngineerKpiRow({ u, logs, filterFrom, filterTo }) {
       <td style={tdS}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <div style={{
-            width: 30, height: 30, borderRadius: "50%", background: "var(--accent)",
+            width: 30, height: 30, borderRadius: "50%", background: "var(--accent-grad)",
             color: "#fff", fontSize: 11, fontWeight: 700,
             display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
           }}>{initials}</div>

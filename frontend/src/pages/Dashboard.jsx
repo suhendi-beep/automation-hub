@@ -357,7 +357,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
                 <span style={{...S.cardIcon, color:"var(--blue)"}}><Icon name="report" size={15}/></span>
                 <span style={S.cardTitle}>Daily report</span>
               </div>
-              <button style={S.viewAllLink} onClick={() => navigate("daily-task")}>
+              <button style={S.viewAllLink} onClick={() => navigate("daily-report")}>
                 Details <Icon name="arrowRight" size={12}/>
               </button>
             </div>
@@ -375,7 +375,7 @@ export default function Dashboard({ customers, navigate, currentUser }) {
                   ? `${new Date(lastDailyRun.last_run).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"})} · ${new Date(lastDailyRun.last_run).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})} WIB`
                   : "Run Daily Backup Status to generate"}
               </div>
-              <button style={S.downloadBtn} onClick={() => navigate("daily-task")}>
+              <button style={S.downloadBtn} onClick={() => navigate("daily-report")}>
                 <Icon name="download" size={13}/> Download report
               </button>
             </div>
@@ -490,7 +490,7 @@ const S = {
           background:"var(--bg2)", border:"1px solid var(--border)", borderRadius:20,
           padding:"26px 28px", marginBottom:16, boxShadow:"var(--shadow-card)"},
   heroGlow:{position:"absolute", inset:0, pointerEvents:"none",
-          background:"radial-gradient(620px 200px at 100% 0%, rgba(225,29,72,.22), rgba(232,194,122,.05) 45%, transparent 72%)"},
+          background:"radial-gradient(620px 200px at 100% 0%, rgba(139,18,38,.30), rgba(232,194,122,.05) 45%, transparent 72%)"},
   heroLeft:{position:"relative", minWidth:0},
   heroEyebrow:{fontSize:11.5, fontWeight:600, color:"var(--rose)", letterSpacing:".04em", textTransform:"uppercase"},
   heroTitle:{fontSize:30, fontWeight:750, letterSpacing:"-.04em", color:"var(--text)", marginTop:5, lineHeight:1.12},

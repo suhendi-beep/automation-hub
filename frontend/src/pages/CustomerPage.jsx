@@ -115,6 +115,9 @@ export default function CustomerPage({
     </div>
   );
 
+  // Jobs with hidden:true are surfaced elsewhere (e.g. Daily Report), not here.
+  const visibleAutos = customer.automations.filter(a => !a.hidden);
+
   return (
     <div style={C.root}>
 
@@ -122,7 +125,7 @@ export default function CustomerPage({
       <PageHeader
         icon="layers"
         title={customer.name}
-        subtitle={`${customer.platform} · ${customer.automations.length} automations${history.length>0 ? " · Last run: "+new Date(history[0].last_run).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}) : ""}`}
+        subtitle={`${customer.platform} · ${visibleAutos.length} automations${history.length>0 ? " · Last run: "+new Date(history[0].last_run).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}) : ""}`}
         actions={
           <>
             <button style={C.backBtn} onClick={()=>navigate("dashboard")}>
@@ -142,10 +145,10 @@ export default function CustomerPage({
         <div style={C.left}>
           <div style={C.secHead}>
             <span style={C.secLabel}>Automation Jobs</span>
-            <span style={{fontSize:11,color:"var(--muted)"}}>{customer.automations.length} jobs</span>
+            <span style={{fontSize:11,color:"var(--muted)"}}>{visibleAutos.length} jobs</span>
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:10,overflowY:"auto",flex:1,paddingRight:2}}>
-            {customer.automations.map(auto => {
+            {visibleAutos.map(auto => {
               const st     = statuses[auto.id];
               const isRun  = !!(running||{})[auto.id];
               const showLog= activeLog === auto.id;

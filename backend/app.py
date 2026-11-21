@@ -75,6 +75,10 @@ GRAFANA_PROM_DATASOURCES = [
     ("Huawei",   "eey51w20ssn40e"),
 ]
 
+# Alert baru ditampilkan di app setelah firing minimal 5 menit, supaya alert
+# yang singkat (flapping) tidak langsung jadi spam notifikasi.
+GRAFANA_ALERT_MIN_AGE_SECONDS = 300
+
 # Throttle repeated Grafana failure logs (the frontend polls every 30s).
 _grafana_last_error = None
 _grafana_last_log_at = 0.0
@@ -163,6 +167,7 @@ REGISTRY = {
                 "requires_oci_login": False,
                 "requires_oci_credentials": False,
                 "args": [],
+                "hidden": True,  # surfaced in the Daily Report page instead of Automation Jobs
             },
         ],
     },
@@ -376,7 +381,8 @@ def app_config():
 def get_customers():
     return jsonify([
         {"id": cid, "name": c["name"], "platform": c["platform"],
-         "status": c["status"], "automation_count": len(c["automations"])}
+         "status": c["status"],
+         "automation_count": sum(1 for a in c["automations"] if not a.get("hidden"))}
         for cid, c in REGISTRY.items()
     ])
 
@@ -579,6 +585,16 @@ def _norm_ts(value):
     return re.sub(r"(\.\d{3})\d*(?=Z|[+-]\d{2}:\d{2}$)", r"\1", value)
 
 
+def _alert_age_seconds(started_at, now):
+    if not started_at:
+        return None
+    try:
+        started = datetime.fromisoformat(_norm_ts(started_at).replace("Z", "+00:00"))
+        return (now - started).total_seconds()
+    except Exception:
+        return None
+
+
 def _alert_key(name, resource, active_at):
     try:
         started = datetime.fromisoformat(_norm_ts(active_at).replace("Z", "+00:00"))
@@ -598,14 +614,14 @@ def _fetch_prometheus_alerts(now):
             r = requests.get(url, auth=(GRAFANA_USER, GRAFANA_PASS), timeout=8)
             r.raise_for_status()
             data = r.json() or {}
-            return folder, (data.get("data") or {}).get("alerts") or []
+            return folder, uid, (data.get("data") or {}).get("alerts") or []
         except Exception as e:
             log.warning("Grafana datasource alerts %s gagal: %s", folder, e)
-            return folder, []
+            return folder, uid, []
 
     result = []
     with ThreadPoolExecutor(max_workers=len(GRAFANA_PROM_DATASOURCES)) as ex:
-        for folder, items in ex.map(fetch, GRAFANA_PROM_DATASOURCES):
+        for folder, ds_uid, items in ex.map(fetch, GRAFANA_PROM_DATASOURCES):
             for item in items:
                 state = (item.get("state") or "").lower()
                 if state not in ("firing", "pending"):
@@ -627,6 +643,7 @@ def _fetch_prometheus_alerts(now):
                 result.append({
                     "name":         labels.get("alertname", "Unknown Alert"),
                     "folder":       folder,
+                    "datasource_uid": ds_uid,
                     "severity":     _grafana_severity_from_labels(labels),
                     "resource":     resource,
                     "labels":       labels,
@@ -696,7 +713,13 @@ def fetch_grafana_alerts():
             continue
         seen.add(key)
         alerts.append(a)
-    return alerts
+
+    # Sembunyikan alert yang belum firing cukup lama (default 5 menit).
+    return [
+        a for a in alerts
+        if (age := _alert_age_seconds(a.get("active_at"), now)) is None
+        or age >= GRAFANA_ALERT_MIN_AGE_SECONDS
+    ]
 
 
 @app.route("/api/grafana/alerts")
@@ -716,6 +739,390 @@ def grafana_alerts():
     except Exception as e:
         log.exception("Grafana alerts failed")
         return jsonify({"alerts": [], "configured": True, "error": str(e)})
+
+
+# ── Grafana alert chart (rule query history) ────────────────
+GRAPH_RANGES = {"1h": 3600, "6h": 21600, "24h": 86400}
+_graph_rule_cache = {}
+_graph_data_cache = {}
+_graph_lock = threading.Lock()
+
+
+def _graph_cache_get(store, key, ttl):
+    now = time.time()
+    with _graph_lock:
+        hit = store.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+        if hit:
+            store.pop(key, None)
+    return None
+
+
+def _graph_cache_put(store, key, value, max_entries=128):
+    now = time.time()
+    with _graph_lock:
+        store[key] = (now, value)
+        if len(store) > max_entries:
+            for k in sorted(store, key=lambda x: store[x][0])[: len(store) - max_entries]:
+                store.pop(k, None)
+
+
+def _grafana_alert_rule(uid):
+    cached = _graph_cache_get(_graph_rule_cache, uid, 300)
+    if cached is not None:
+        return cached
+    resp = requests.get(
+        f"{GRAFANA_BASE_URL}/api/v1/provisioning/alert-rules/{uid}",
+        auth=(GRAFANA_USER, GRAFANA_PASS), timeout=12,
+    )
+    if resp.status_code == 404:
+        raise KeyError(uid)
+    resp.raise_for_status()
+    rule = resp.json() or {}
+    _graph_cache_put(_graph_rule_cache, uid, rule)
+    return rule
+
+
+def _rule_source_queries(rule):
+    queries = []
+    for node in (rule.get("data") or []):
+        ds_uid = node.get("datasourceUid")
+        if not ds_uid or ds_uid == "__expr__":
+            continue
+        model = dict(node.get("model") or {})
+        ds = model.pop("datasource", {}) or {}
+        model.pop("refId", None)
+        ref_id = node.get("refId") or f"Q{len(queries) + 1}"
+        model["refId"] = ref_id
+        model["datasource"] = {"uid": ds_uid, "type": ds.get("type")}
+        model.setdefault("intervalMs", 60000)
+        model.setdefault("maxDataPoints", 400)
+        queries.append(model)
+        if len(queries) >= 4:
+            break
+    return queries
+
+
+def _series_point_ts(value):
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+        except Exception:
+            return None
+    try:
+        ts = float(value)
+    except Exception:
+        return None
+    return int(ts if ts >= 1e12 else ts * 1000)
+
+
+def _series_label(field, index):
+    labels = field.get("labels") or {}
+    name = field.get("name")
+    instance = labels.get("instance") or labels.get("hostName")
+    resource = labels.get("resourceName")
+    if name:
+        return f"{name} · {instance}" if instance else str(name)
+    if resource and instance:
+        return f"{resource} · {instance}"
+    return str(instance or f"series {index + 1}")
+
+
+TARGET_LABEL_KEYS = ("instance", "hostName", "nodename", "hostname", "node",
+                     "resourceName", "service")
+
+
+def _norm_label_value(value):
+    return str(value or "").strip().lower().rstrip("/")
+
+
+def _host_only(value):
+    s = _norm_label_value(value)
+    if "://" in s:
+        s = s.split("://", 1)[1].split("/", 1)[0]
+    if re.search(r":\d+$", s):
+        s = s.rsplit(":", 1)[0]
+    return s
+
+
+def _series_matches_target(labels, target):
+    for key, want in target.items():
+        got = labels.get(key)
+        if got is None:
+            continue
+        a, b = _norm_label_value(got), _norm_label_value(want)
+        if a == b:
+            return True
+        if key in ("instance", "hostName", "nodename", "hostname", "node"):
+            if "://" in a or "://" in b or "/" in a or "/" in b:
+                continue
+            ha, hb = _host_only(a), _host_only(b)
+            if ha and ha == hb:
+                return True
+    return False
+
+
+def _frames_to_series(frames, match, target=None, limit=6):
+    series = []
+    for frame in frames:
+        fields = (frame.get("schema") or {}).get("fields") or []
+        columns = (frame.get("data") or {}).get("values") or []
+        if not fields or not columns:
+            continue
+        time_idx = next(
+            (i for i, f in enumerate(fields) if f.get("type") == "time"), 0)
+        times = columns[time_idx] if time_idx < len(columns) else []
+        for idx, field in enumerate(fields):
+            if idx == time_idx or field.get("type") == "time" or idx >= len(columns):
+                continue
+            points = []
+            for ts, value in zip(times, columns[idx]):
+                if value is None:
+                    continue
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+                if value != value:
+                    continue
+                ts_ms = _series_point_ts(ts)
+                if ts_ms is not None:
+                    points.append([ts_ms, value])
+            if points:
+                series.append({
+                    "name": _series_label(field, idx),
+                    "points": points,
+                    "labels": field.get("labels") or {},
+                })
+    if target:
+        # Strict scoping: only series that belong to the alert's own target.
+        series = [s for s in series if _series_matches_target(s["labels"], target)]
+    elif match:
+        series.sort(key=lambda s: (0 if match in s["name"] else 1, s["name"]))
+    series = series[:limit]
+    for item in series:
+        item.pop("labels", None)
+        pts = item["points"]
+        if len(pts) > 400:
+            step = max(1, len(pts) // 400)
+            sampled = pts[::step]
+            if sampled[-1] != pts[-1]:
+                sampled.append(pts[-1])
+            item["points"] = sampled
+    return series
+
+
+@app.route("/api/grafana/alert-graph")
+def grafana_alert_graph():
+    rule_uid = (request.args.get("ruleUid") or "").strip()
+    range_key = (request.args.get("range") or "6h").strip()
+    match = (request.args.get("match") or "").strip()[:200]
+    raw_labels = (request.args.get("labels") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{6,40}", rule_uid):
+        return jsonify({"ok": False, "code": "invalid_rule", "error": "Invalid alert rule UID."}), 400
+    if range_key not in GRAPH_RANGES:
+        return jsonify({"ok": False, "code": "invalid_range", "error": "Unsupported time range."}), 400
+    target = {}
+    if raw_labels:
+        if len(raw_labels) > 1200:
+            return jsonify({"ok": False, "code": "invalid_labels",
+                            "error": "Alert target labels are too large."}), 400
+        try:
+            parsed = json.loads(raw_labels)
+        except Exception:
+            parsed = None
+        if not isinstance(parsed, dict):
+            return jsonify({"ok": False, "code": "invalid_labels",
+                            "error": "Alert target labels must be a JSON object."}), 400
+        for key, value in parsed.items():
+            if key in TARGET_LABEL_KEYS and isinstance(value, str) and value.strip():
+                target[key] = value.strip()[:300]
+    if not (GRAFANA_USER and GRAFANA_PASS):
+        return jsonify({"ok": False, "code": "not_configured",
+                        "error": "Grafana credentials are not configured."}), 503
+
+    cache_key = (rule_uid, range_key, match, tuple(sorted(target.items())))
+    cached = _graph_cache_get(_graph_data_cache, cache_key, 60)
+    if cached is not None:
+        return jsonify(cached)
+
+    try:
+        rule = _grafana_alert_rule(rule_uid)
+    except KeyError:
+        return jsonify({"ok": False, "code": "rule_missing",
+                        "error": "The Grafana alert rule was not found."}), 404
+    except requests.exceptions.RequestException as e:
+        _log_grafana_failure(f"Grafana rule query failed: {e}")
+        return jsonify({"ok": False, "code": "grafana_unavailable",
+                        "error": f"Grafana unreachable: {e}"}), 502
+
+    queries = _rule_source_queries(rule)
+    if not queries:
+        return jsonify({"ok": False, "code": "no_query",
+                        "error": "This alert rule has no datasource query to chart."}), 422
+
+    to_ms = int(time.time() * 1000)
+    from_ms = to_ms - GRAPH_RANGES[range_key] * 1000
+    try:
+        resp = requests.post(
+            f"{GRAFANA_BASE_URL}/api/ds/query",
+            json={"queries": queries, "from": str(from_ms), "to": str(to_ms)},
+            auth=(GRAFANA_USER, GRAFANA_PASS), timeout=40,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        _log_grafana_failure(f"Grafana query failed: {e}")
+        return jsonify({"ok": False, "code": "query_failed",
+                        "error": f"Grafana query failed: {e}"}), 502
+
+    frames = []
+    query_errors = []
+    for result in ((resp.json() or {}).get("results") or {}).values():
+        if result.get("error"):
+            query_errors.append(str(result["error"])[:200])
+        frames.extend(result.get("frames") or [])
+
+    series = _frames_to_series(frames, match, target=target)
+    payload = {
+        "ok": True,
+        "rule_uid": rule_uid,
+        "title": rule.get("title") or "",
+        "from": from_ms,
+        "to": to_ms,
+        "series": series,
+        "target": target,
+    }
+    if not series:
+        if target:
+            label = next(iter(target))
+            payload["warning"] = (
+                f"No series in this alert rule matched the alert target "
+                f"({label}={target[label]}).")
+        else:
+            payload["warning"] = (query_errors[0] if query_errors else
+                                  "No data points returned for this time range.")
+    _graph_cache_put(_graph_data_cache, cache_key, payload)
+    return jsonify(payload)
+
+
+def _prom_query_range(ds_uid, expr, start, end, step, timeout=25):
+    resp = requests.get(
+        f"{GRAFANA_BASE_URL}/api/datasources/proxy/uid/{ds_uid}/api/v1/query_range",
+        params={"query": expr, "start": start, "end": end, "step": step},
+        auth=(GRAFANA_USER, GRAFANA_PASS), timeout=timeout,
+    )
+    resp.raise_for_status()
+    return ((resp.json() or {}).get("data") or {}).get("result") or []
+
+
+@app.route("/api/grafana/alert-metrics")
+def grafana_alert_metrics():
+    """Utilization history for a Prometheus/Alertmanager alert target."""
+    ds_uid = (request.args.get("datasourceUid") or "").strip()
+    instance = (request.args.get("instance") or "").strip()[:300]
+    range_key = (request.args.get("range") or "6h").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,40}", ds_uid):
+        return jsonify({"ok": False, "code": "invalid_datasource",
+                        "error": "Invalid datasource UID."}), 400
+    if len(instance) < 3 or any(ord(c) < 32 for c in instance):
+        return jsonify({"ok": False, "code": "invalid_instance",
+                        "error": "Invalid alert instance."}), 400
+    if range_key not in GRAPH_RANGES:
+        return jsonify({"ok": False, "code": "invalid_range",
+                        "error": "Unsupported time range."}), 400
+    if not (GRAFANA_USER and GRAFANA_PASS):
+        return jsonify({"ok": False, "code": "not_configured",
+                        "error": "Grafana credentials are not configured."}), 503
+
+    cache_key = ("metrics", ds_uid, instance, range_key)
+    cached = _graph_cache_get(_graph_data_cache, cache_key, 60)
+    if cached is not None:
+        return jsonify(cached)
+
+    to_s = int(time.time())
+    from_s = to_s - GRAPH_RANGES[range_key]
+    step = max(60, (to_s - from_s) // 400)
+    sel = f"instance={json.dumps(instance)}"
+    is_url = "://" in instance
+    port = instance.rsplit(":", 1)[-1] if re.search(r":\d+$", instance) else ""
+
+    specs = []
+    if is_url:
+        specs.append(("Health check", f"probe_success{{{sel}}}"))
+    else:
+        if port != "9182":
+            fs = f'{sel},fstype!~"tmpfs|ramfs|overlay|squashfs|devtmpfs"'
+            specs += [
+                ("CPU utilization",
+                 f"100 - (avg(rate(node_cpu_seconds_total{{{sel},mode=\"idle\"}}[5m])) * 100)"),
+                ("Memory utilization",
+                 f"100 * (1 - (node_memory_MemAvailable_bytes{{{sel}}}"
+                 f" / node_memory_MemTotal_bytes{{{sel}}}))"),
+                ("Disk utilization",
+                 f"100 - (min(node_filesystem_avail_bytes{{{fs}}}"
+                 f" / node_filesystem_size_bytes{{{fs}}}) * 100)"),
+            ]
+        if port == "9182":
+            specs += [
+                ("CPU utilization",
+                 f"100 * (1 - sum(rate(windows_cpu_time_total{{{sel},mode=\"idle\"}}[5m]))"
+                 f" / sum(rate(windows_cpu_time_total{{{sel}}}[5m])))"),
+                ("Memory utilization",
+                 f"100 * (1 - windows_memory_available_bytes{{{sel}}}"
+                 f" / windows_cs_physical_memory_bytes{{{sel}}})"),
+                ("Disk utilization",
+                 f"100 - (min(windows_logical_disk_free_bytes{{{sel},volume!~\"HarddiskVolume.*\"}}"
+                 f" / windows_logical_disk_size_bytes{{{sel}}}) * 100)"),
+            ]
+
+    def run(spec):
+        name, expr = spec
+        try:
+            rows = _prom_query_range(ds_uid, expr, from_s, to_s, step)
+        except Exception as e:
+            return name, [], str(e)[:200]
+        for row in rows:
+            points = []
+            for ts, value in (row.get("values") or []):
+                try:
+                    value = float(value)
+                except Exception:
+                    continue
+                if value != value:
+                    continue
+                points.append([int(float(ts) * 1000), value])
+            if points:
+                return name, points, None
+        return name, [], None
+
+    series = []
+    errors = []
+    with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
+        for name, points, err in ex.map(run, specs):
+            if err:
+                errors.append(err)
+            elif points:
+                if len(points) > 400:
+                    sampling = max(1, len(points) // 400)
+                    points = points[::sampling]
+                series.append({"name": name, "points": points})
+
+    payload = {
+        "ok": True,
+        "source": "prometheus",
+        "title": f"Utilization · {instance}",
+        "instance": instance,
+        "from": from_s * 1000,
+        "to": to_s * 1000,
+        "series": series,
+    }
+    if not series:
+        payload["warning"] = (errors[0] if errors else
+                              f"No utilization metrics were found for {instance} "
+                              f"in this datasource (last {range_key}).")
+    _graph_cache_put(_graph_data_cache, cache_key, payload)
+    return jsonify(payload)
 
 
 # ── Daily backup database catalog ───────────────────────────

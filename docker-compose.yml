@@ -75,7 +75,9 @@ services:
 
   beat:
     build: ./backend
-    command: celery -A celery_worker.celery beat --loglevel=info --schedule=/app/shared/celerybeat-schedule --pidfile=/app/shared/celerybeat.pid
+    # Pidfile hidup di volume; tanpa rm, beat menolak start setelah container restart
+    # karena pid lama (selalu 1) dianggap masih jalan.
+    command: sh -c "rm -f /app/shared/celerybeat.pid && exec celery -A celery_worker.celery beat --loglevel=info --schedule=/app/shared/celerybeat-schedule --pidfile=/app/shared/celerybeat.pid"
     restart: always
     volumes:
       - ./shared:/app/shared

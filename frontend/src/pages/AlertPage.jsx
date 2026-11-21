@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Icon from "../components/Icon.jsx";
 import PageHeader from "../components/PageHeader.jsx";
 import { logActivity } from "../activityLog.js";
 import { isAlertMuted, setAlertMuted, onAlertMuteChange } from "../alertMute.js";
 import { localISODate } from "../api.js";
+import { fmtTime, shortName, canCreateTicket, recordTicketCreated, getOrCreateTicket } from "../dailyReport.js";
 
 /* ─── helpers ─────────────────────────────────────────── */
 function fmtDur(min) {
@@ -11,26 +12,9 @@ function fmtDur(min) {
   const h = Math.floor(min / 60), m = min % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
 }
-function fmtTime(iso) {
-  if (!iso) return "-";
-  try {
-    return new Date(iso).toLocaleString("en-GB", {
-      day: "2-digit", month: "short",
-      hour: "2-digit", minute: "2-digit"
-    });
-  } catch { return iso.slice(0,16).replace("T"," "); }
-}
 function shortInstance(inst) {
   if (!inst || inst === "-") return "-";
   return inst.replace(/:\d+$/, "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-}
-function shortName(name) {
-  return (name||"")
-    .replace(/^Resource\s+/i, "")
-    .replace(/^Uptime\s+-\s+/i, "Uptime - ")
-    .replace(/^DatasourceNoData$/i, "Datasource No Data")
-    .replace(/^\[ALERT\]\s*/i, "")
-    .replace(/\s{2,}/g, " ").trim();
 }
 
 /* ─── folder display map ─────────────────────────────── */
@@ -68,8 +52,8 @@ function ocidOf(a) {
 }
 
 // Databases covered by the Daily Backup Status check (name + OCID + region).
-// Alerts that mention one of these DBs are investigated with Top SQL / Perf Hub
-// even when Grafana only reports a hostname (e.g. db-pancala-1, toshub-db).
+// Alerts that mention one of these DBs are investigated with Top SQL and the
+// Grafana chart even when Grafana only reports a hostname (e.g. db-pancala-1).
 let BACKUP_DBS = [];
 function setBackupDatabases(list) {
   BACKUP_DBS = Array.isArray(list) ? list : [];
@@ -148,41 +132,29 @@ function isDbAlert(a) {
   return DB_ALERT_NAME_RE.test(name);
 }
 
-// /dbmgmt-ui/perfhub only accepts a managed database OCID. perfhubContext
-// makes the console open the Activity dashboard directly instead of its home.
-function perfHubUrl(a, sqlId) {
-  const ocid = dbOcid(a);
-  if (!ocid) return null;
-  const now = Date.now();
-  const context = {
-    dateTime: {
-      startDate: now - 60 * 60 * 1000,
-      endDate: now,
-    },
-    viewPort: { startDate: "", endDate: "" },
-    selectedTab: {
-      name: "activityTab",
-      filters: sqlId ? [{
-        key: "filter_list",
-        value: JSON.stringify({ sqlid: { value: sqlId, disabled: false } }),
-      }] : [],
-    },
-  };
-  const params = new URLSearchParams({
-    region: dbRegion(a),
-    ocid,
-    perfhubContext: JSON.stringify(context),
-  });
-  return `${OCI_CONSOLE_URL}/dbmgmt-ui/perfhub?${params}`;
-}
-
 // DB System alerts can at least open the DB Systems page in the same region.
 function dbConsoleUrl(a) {
-  const perf = perfHubUrl(a);
-  if (perf) return perf;
   if (!dbSystemOcid(a)) return null;
   const region = (a.labels || {}).region || "ap-singapore-1";
   return `${OCI_CONSOLE_URL}/db/db-systems?region=${encodeURIComponent(region)}`;
+}
+
+// OCI Database Management Performance Hub (Top SQL lives here). Opened in a
+// new tab so the engineer's own OCI session is used; OCI asks for login when
+// the session is missing and lands on Top SQL directly when it is still valid.
+function ociTopSqlUrl(a) {
+  const region = encodeURIComponent(dbRegion(a));
+  const dbId = dbOcid(a);
+  if (dbId) {
+    return `${OCI_CONSOLE_URL}/dbmgmt-ui/perfhub?region=${region}`
+      + `&ocid=${encodeURIComponent(dbId)}`;
+  }
+  const sysOcid = dbSystemOcid(a);
+  if (sysOcid) {
+    return `${OCI_CONSOLE_URL}/db/db-systems/${encodeURIComponent(sysOcid)}`
+      + `/performance-hub?region=${region}`;
+  }
+  return null;
 }
 
 function rawInstance(a) {
@@ -412,7 +384,7 @@ function exploreExpr(a) {
 }
 
 function grafanaExploreUrl(a) {
-  const uid = (a.labels || {}).datasource_uid || FOLDER_DATASOURCE[a.folder];
+  const uid = (a.labels || {}).datasource_uid || a.datasource_uid || FOLDER_DATASOURCE[a.folder];
   const expr = exploreExpr(a);
   if (!uid || !expr) return null;
   const pane = {
@@ -438,6 +410,260 @@ function grafanaEvidenceUrl(a) {
   const rule = (a.labels || {}).__alert_rule_uid__;
   if (rule) return `${GRAFANA_BASE_URL}/alerting/grafana/${encodeURIComponent(rule)}/view`;
   return grafanaExploreUrl(a);
+}
+
+function grafanaRuleUid(a) {
+  return String((a.labels || {}).__alert_rule_uid__ || "").trim();
+}
+
+const TARGET_LABEL_PRIORITY = ["instance", "hostName", "nodename", "hostname",
+  "node", "resourceName", "service"];
+
+function alertTarget(a) {
+  const labels = a.labels || {};
+  for (const key of TARGET_LABEL_PRIORITY) {
+    const value = String(labels[key] || "").trim();
+    if (value) return { key, value };
+  }
+  return null;
+}
+
+const CHART_COLORS = ["#E8C27A", "#E11D48", "#E8A598", "#93C5FD", "#4ADE80", "#C4B5FD"];
+const CHART_RANGES = [["1h", "1h"], ["6h", "6h"], ["24h", "24h"]];
+
+function fmtAxisValue(v) {
+  const abs = Math.abs(v);
+  if (abs >= 1e9) return `${(v / 1e9).toFixed(1)}G`;
+  if (abs >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+  if (abs >= 10) return v.toFixed(0);
+  return Number(v.toFixed(2)).toString();
+}
+
+/* Lightweight SVG history chart for a Grafana alert rule query. */
+function AlertLineChart({ series, from, to }) {
+  const W = 960, H = 300, PL = 56, PR = 18, PT = 14, PB = 30;
+  const bounds = useMemo(() => {
+    const points = series.flatMap(s => s.points);
+    if (!points.length) return null;
+    let minX = from, maxX = to, minY = Infinity, maxY = -Infinity;
+    points.forEach(([ts, v]) => {
+      if (ts < minX) minX = ts;
+      if (ts > maxX) maxX = ts;
+      if (v < minY) minY = v;
+      if (v > maxY) maxY = v;
+    });
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || maxX <= minX) return null;
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
+    const pad = (maxY - minY) * 0.12 || Math.max(Math.abs(maxY) * 0.05, 1);
+    let lo = minY - pad, hi = maxY + pad;
+    if (minY >= 0 && maxY <= 100) {
+      lo = 0;
+      hi = Math.min(105, Math.max(hi, 100));
+    }
+    return { minX, maxX, minY: lo, maxY: hi };
+  }, [series, from, to]);
+
+  if (!bounds) return null;
+
+  const sx = ts => PL + ((ts - bounds.minX) / (bounds.maxX - bounds.minX)) * (W - PL - PR);
+  const sy = v => PT + ((bounds.maxY - v) / (bounds.maxY - bounds.minY)) * (H - PT - PB);
+  const yTicks = [0, 1, 2, 3, 4].map(i => bounds.minY + ((bounds.maxY - bounds.minY) * i) / 4);
+  const xTicks = [0, 1, 2, 3, 4].map(i =>
+    Math.round(bounds.minX + ((bounds.maxX - bounds.minX) * i) / 4));
+  const fmtTime = ts => new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}
+      role="img" aria-label="Grafana alert history">
+      {yTicks.map((v, i) => (
+        <g key={`y${i}`}>
+          <line x1={PL} x2={W - PR} y1={sy(v)} y2={sy(v)}
+            stroke="rgba(255,255,255,.07)" strokeWidth="1"/>
+          <text x={PL - 8} y={sy(v) + 3} textAnchor="end"
+            style={{ fontSize: 9.5, fill: "var(--muted2)" }}>{fmtAxisValue(v)}</text>
+        </g>
+      ))}
+      {xTicks.map((ts, i) => (
+        <text key={`x${i}`} x={sx(ts)} y={H - 10}
+          textAnchor={i === 0 ? "start" : i === xTicks.length - 1 ? "end" : "middle"}
+          style={{ fontSize: 9.5, fill: "var(--muted2)" }}>{fmtTime(ts)}</text>
+      ))}
+      {series.map((s, i) => {
+        const color = CHART_COLORS[i % CHART_COLORS.length];
+        const path = s.points.map(([ts, v], idx) =>
+          `${idx ? "L" : "M"}${sx(ts).toFixed(1)},${sy(v).toFixed(1)}`).join(" ");
+        return (
+          <path key={s.name + i} d={path} fill="none" stroke={color}
+            strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round"
+            style={{ filter: "drop-shadow(0 0 4px rgba(225,29,72,.25))" }}/>
+        );
+      })}
+    </svg>
+  );
+}
+
+function GrafanaChartModal({ alert, onClose }) {
+  const ruleUid = grafanaRuleUid(alert);
+  const openUrl = grafanaEvidenceUrl(alert);
+  const target = alertTarget(alert);
+  const promDs = String(alert.datasource_uid || "").trim();
+  const promInstance = String((alert.labels || {}).instance || "").trim();
+  const source = ruleUid ? "rule" : (promDs && promInstance ? "metrics" : "");
+  const targetKey = target ? `${target.key}=${target.value}` : "";
+  const [range, setRange] = useState("6h");
+  const [nonce, setNonce] = useState(0);
+  const [state, setState] = useState({ loading: true, error: "", code: "", data: null });
+
+  useEffect(() => {
+    if (!source) {
+      setState({ loading: false, code: "no_source", data: null,
+        error: "This alert has no linked Grafana rule or Prometheus datasource to chart." });
+      return;
+    }
+    const ctrl = new AbortController();
+    setState(s => ({ loading: true, error: "", code: "", data: s.data }));
+    const qs = new URLSearchParams({ range, v: String(nonce) });
+    if (source === "rule") {
+      qs.set("ruleUid", ruleUid);
+      if (target) qs.set("labels", JSON.stringify({ [target.key]: target.value }));
+    } else {
+      qs.set("datasourceUid", promDs);
+      qs.set("instance", promInstance);
+    }
+    const endpoint = source === "rule" ? "alert-graph" : "alert-metrics";
+    fetch(`/api/grafana/${endpoint}?${qs}`, { signal: ctrl.signal })
+      .then(r => r.json().then(d => ({ httpOk: r.ok, d })))
+      .then(({ httpOk, d }) => {
+        if (!httpOk || d.ok === false) {
+          setState({ loading: false, error: d.error || "Failed to load the Grafana chart.",
+            code: d.code || "", data: null });
+        } else {
+          setState({ loading: false, error: "", code: "", data: d });
+        }
+      })
+      .catch(e => {
+        if (e.name !== "AbortError") {
+          setState({ loading: false, error: "Unable to reach the backend.", code: "", data: null });
+        }
+      });
+    return () => ctrl.abort();
+  }, [source, ruleUid, promDs, promInstance, targetKey, range, nonce]);
+
+  const chip = on => ({
+    fontSize: 10.5, fontWeight: 600, padding: "4px 11px", borderRadius: 999,
+    border: `1px solid ${on ? "var(--border3)" : "var(--border2)"}`,
+    background: on ? "rgba(139,18,38,.30)" : "var(--surface2)",
+    color: on ? "var(--rose)" : "var(--muted)",
+    cursor: "pointer", fontFamily: "inherit",
+  });
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}
+        style={{ width: 1040, maxWidth: "94vw", maxHeight: "92vh" }}>
+        <div className="modal-header">
+          <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <Icon name="grafana" size={16} style={{ color: "var(--rose)", flexShrink: 0 }}/>
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 650, color: "var(--text)" }}>
+                Grafana chart
+              </span>
+              <span style={{ display: "block", fontSize: 10.5, color: "var(--muted)", marginTop: 1,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {shortName(alert.name)} · {folderDisplay(alert.folder)} · {fmtDur(alert.duration_min || 0)}
+              </span>
+            </span>
+          </span>
+          <button className="modal-close" onClick={onClose} aria-label="Close"><Icon name="close" size={14}/></button>
+        </div>
+
+        <div className="modal-body" style={{ gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {CHART_RANGES.map(([key, label]) => (
+              <button key={key} onClick={() => setRange(key)} style={chip(range === key)}>{label}</button>
+            ))}
+            <span style={{ flex: 1 }}/>
+            <button onClick={() => setNonce(n => n + 1)} disabled={state.loading}
+              style={{ ...MINI_BTN, opacity: state.loading ? .5 : 1, cursor: state.loading ? "default" : "pointer" }}>
+              <Icon name="refresh" size={10}/> Refresh
+            </button>
+            {openUrl && (
+              <a href={openUrl} target="_blank" rel="noreferrer"
+                style={{ ...MINI_BTN, textDecoration: "none" }}>
+                Open in Grafana <Icon name="external" size={9}/>
+              </a>
+            )}
+          </div>
+
+          <div style={{ background: "rgba(10,3,5,.55)", border: "1px solid var(--border2)",
+            borderRadius: 12, padding: "10px 12px", minHeight: 220 }}>
+            {state.loading && !state.data ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                gap: 8, height: 210, color: "var(--muted)", fontSize: 12 }}>
+                <span className="spinner" style={{ width: 16, height: 16 }}/> Querying Grafana…
+              </div>
+            ) : state.error ? (
+              <div style={{ padding: "26px 10px", textAlign: "center" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 650, color: "var(--red)", marginBottom: 6 }}>
+                  {state.code === "rule_missing" ? "Grafana alert rule not found"
+                    : state.code === "no_query" ? "No chartable query in this rule"
+                    : state.code === "no_source" ? "No chart source linked"
+                    : "Could not load the Grafana chart"}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text4)", lineHeight: 1.6 }}>
+                  {state.error}
+                </div>
+                {openUrl && (
+                  <a href={openUrl} target="_blank" rel="noreferrer"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 12,
+                      fontSize: 11, color: "var(--blue)", textDecoration: "none" }}>
+                    Open the alert in Grafana <Icon name="external" size={10}/>
+                  </a>
+                )}
+              </div>
+            ) : (state.data?.series || []).length === 0 ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                height: 210, color: "var(--muted)", fontSize: 12, textAlign: "center", padding: "0 20px" }}>
+                {state.data?.warning || "No data points returned for this time range."}
+              </div>
+            ) : (
+              <>
+                <AlertLineChart series={state.data.series}
+                  from={state.data.from} to={state.data.to}/>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", marginTop: 8 }}>
+                  {state.data.series.map((s, i) => {
+                    const last = s.points[s.points.length - 1];
+                    return (
+                      <span key={s.name + i} title={s.name}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 5,
+                          fontSize: 10, color: "var(--muted)", maxWidth: 300 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0,
+                          background: CHART_COLORS[i % CHART_COLORS.length] }}/>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis",
+                          whiteSpace: "nowrap" }}>{s.name}</span>
+                        <b style={{ color: "var(--text3)", fontWeight: 600 }}>
+                          {last ? fmtAxisValue(last[1]) : "—"}
+                        </b>
+                      </span>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div style={{ fontSize: 9.5, color: "var(--muted)", lineHeight: 1.55 }}>
+            {source === "metrics"
+              ? `Utilization is queried from the alert's Prometheus datasource for ${promInstance} only (last ${range}).`
+              : target
+                ? `History is scoped to this alert's own target (${target.key}=${target.value}) using the linked Grafana alert rule (last ${range}).`
+                : `History is queried from the same Grafana alert rule that fired this alert (last ${range}).`}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function alertValues(a) {
@@ -504,46 +730,6 @@ function getSeverity(name, sev) {
   return "info";
 }
 const SEV_COLOR = { critical:"var(--red)", high:"var(--red)", warning:"var(--amber)", info:"var(--muted)" };
-
-/* ─── Ticket number generator ────────────────────────── */
-const TICKET_KEY       = "pr_ticket_counter";
-const TICKET_MAP_KEY   = "pr_alert_tickets"; // alertKey → ticketNumber
-
-/** Generate nomor baru INC-YYYYMMDD-XXXX, increment per hari */
-function generateTicketNumber() {
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  let stored = {};
-  try { stored = JSON.parse(localStorage.getItem(TICKET_KEY) || "{}"); } catch { stored = {}; }
-
-  if (stored.date !== today) {
-    stored = { date: today, seq: 0 };
-  }
-  stored.seq = (stored.seq || 0) + 1;
-  localStorage.setItem(TICKET_KEY, JSON.stringify(stored));
-
-  return `INC-${today}-${String(stored.seq).padStart(4, "0")}`;
-}
-
-/**
- * Ambil ticket untuk alert ini kalau sudah pernah dibuat,
- * atau generate baru dan simpan supaya konsisten dengan Daily Task.
- * Jika alert berulang dalam < 1 jam, kembalikan nomor lama (tidak generate baru).
- */
-function getOrCreateTicket(alertKey) {
-  let map = {};
-  try { map = JSON.parse(localStorage.getItem(TICKET_MAP_KEY) || "{}"); } catch { map = {}; }
-  // Masih dalam cooldown — pakai nomor yang sama
-  if (map[alertKey] && !canCreateTicket(alertKey)) return map[alertKey];
-  // Sudah > 1 jam atau belum pernah → buat baru
-  if (!map[alertKey] || canCreateTicket(alertKey)) {
-    const num = generateTicketNumber();
-    map[alertKey] = num;
-    localStorage.setItem(TICKET_MAP_KEY, JSON.stringify(map));
-    recordTicketCreated(alertKey);
-    return num;
-  }
-  return map[alertKey];
-}
 
 function buildTemplate(a, ticketNum) {
   const sev      = getSeverity(a.name, a.severity);
@@ -741,10 +927,8 @@ function TopSqlPage({ alert, onClose }) {
   const sysOcid = dbSystemOcid(alert);
   const backupDb = backupDbFor(alert);
   const requestOcid = ocid || sysOcid;
-  const consoleUrl = dbConsoleUrl(alert);
-  const consoleLabel = ocid
-    ? "Open Performance Hub in OCI Console"
-    : "Open DB Systems in OCI Console";
+  const consoleUrl = ociTopSqlUrl(alert);
+  const consoleLabel = "Open Top SQL in OCI Console";
   const grafanaUrl = grafanaEvidenceUrl(alert);
   const [state, setState] = useState({ loading: true, error: "", code: "", data: null });
   const [copied, setCopied] = useState("");
@@ -879,8 +1063,8 @@ function TopSqlPage({ alert, onClose }) {
               {state.code === "db_system_no_access" && (
                 <div style={{ marginTop:10, fontSize:10.5, color:"var(--muted)", lineHeight:1.6 }}>
                   This alert comes from a DB System / ASM resource, not a managed database OCID.
-                  Performance Hub and Top SQL require a database OCID. Open the ASM graph in
-                  Grafana or ask the DBA team to grant DB System access.
+                  Top SQL requires a database OCID. Open the ASM graph in Grafana or ask the DBA
+                  team to grant DB System access.
                 </div>
               )}
             </div>
@@ -942,12 +1126,6 @@ function TopSqlPage({ alert, onClose }) {
                       </span>
                     )}
                     <span style={{ flex:1 }}/>
-                    {perfHubUrl(alert, s.sql_id) && (
-                      <a href={perfHubUrl(alert, s.sql_id)} target="_blank" rel="noreferrer"
-                        style={{ ...MINI_BTN, color:"var(--blue)", textDecoration:"none" }}>
-                        Perf Hub <Icon name="external" size={9}/>
-                      </a>
-                    )}
                     {copyBtn(s.sql_id, s.text || "", "Copy SQL")}
                     {copyBtn("id:" + s.sql_id, s.sql_id, "Copy ID")}
                   </div>
@@ -959,7 +1137,7 @@ function TopSqlPage({ alert, onClose }) {
                   {!s.text_full && (
                     <div style={{ padding:"0 12px 8px", fontSize:9.5, color:"var(--amber)" }}>
                       Text from the {state.data.source === "awr" ? "AWR" : "ASH"} report may be truncated.
-                      Open Performance Hub for the full statement.
+                      Copy the SQL ID and open the full statement in the OCI console if needed.
                     </div>
                   )}
                 </div>
@@ -970,7 +1148,7 @@ function TopSqlPage({ alert, onClose }) {
                   ? `AWR snapshot ${state.data.snapshots?.begin} → ${state.data.snapshots?.end}`
                   : "Active Session History (ASH), last hour"}{" "}
                 (snapshot interval ~{state.data.snapshots?.interval_min || 60} min). This is not
-                real-time data. For live analysis, open Performance Hub.
+                real-time data. Open the Grafana chart to review live database trends.
               </div>
             </>
           )}
@@ -1281,7 +1459,7 @@ function evidenceChecklist(kind, a, rancher) {
   if (kind === "db") {
     return [
       "Open Top SQL to review the statements with the highest elapsed time.",
-      "Open Performance Hub for live analysis (sessions, wait events, SQL).",
+      "Open the Grafana chart to review database session and load trends.",
       "Copy the SQL ID and main query into the report.",
       "Escalate to the DBA team if database load is high or a query is problematic.",
     ];
@@ -1318,12 +1496,8 @@ function buildEvidenceReport(a, kind, rancher, grafana) {
     if (rancher.cluster?.name) lines.push(`Cluster      : ${rancher.cluster.name}`);
     if (rancher.namespace) lines.push(`Namespace    : ${rancher.namespace}`);
   }
-  const perf = perfHubUrl(a);
-  if (perf) lines.push(`Perf Hub URL : ${perf}`);
   if (grafana) lines.push(`Grafana URL  : ${grafana}`);
-  if (!perf && dbSystemOcid(a)) {
-    lines.push(`DB System URL: ${dbConsoleUrl(a)}`);
-  }
+  if (dbSystemOcid(a)) lines.push(`DB System URL: ${dbConsoleUrl(a)}`);
   lines.push("", "ALERT CONTEXT", ann.summary || ann.description || "(no summary or description)");
   const values = alertValues(a);
   if (values.length) {
@@ -1345,7 +1519,6 @@ function EvidenceModal({ alert, onClose, onTopSql }) {
   const ann = alert.annotations || {};
   const rancher = rancherTarget(alert);
   const grafana = grafanaEvidenceUrl(alert);
-  const perf = perfHubUrl(alert);
   const dbSys = dbSystemOcid(alert);
   const db = dbOcid(alert);
   const backupDb = backupDbFor(alert);
@@ -1467,7 +1640,6 @@ function EvidenceModal({ alert, onClose, onTopSql }) {
             {(kind === "db" || kind === "db-system") && (db || dbSys) && (
               <button onClick={() => onTopSql(alert)} style={MINI_BTN}>Top SQL</button>
             )}
-            {perf && linkBtn(perf, "Open Performance Hub")}
             {dbSys && !db && linkBtn(dbConsoleUrl(alert), "Open DB Systems")}
             {grafana && linkBtn(grafana, "Open Grafana chart")}
           </div>
@@ -1549,7 +1721,7 @@ function EvidenceModal({ alert, onClose, onTopSql }) {
 /* Labels stay neutral so the accent colour only marks alerts. */
 
 /* ─── Alert Row ──────────────────────────────────────── */
-function AlertRow({ a, isNew, eskalasi, onLaporkan, onTopSql, onEvidence }) {
+function AlertRow({ a, isNew, eskalasi, onLaporkan, onEvidence, onGrafana }) {
   const [expanded, setExpanded] = useState(false);
   const fc      = folderColor(a.folder);
   const sev     = getSeverity(a.name, a.severity);
@@ -1567,7 +1739,6 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan, onTopSql, onEvidence }) {
   const hiddenCount     = allLabelEntries.length - visibleEntries.length;
 
   const rowBg = isOld ? "var(--bg3)" : isNew ? "var(--red-dim)" : "transparent";
-  const perfUrl = perfHubUrl(a);
   const healthCheck = isHealthCheckAlert(a);
   const db = isDbAlert(a);
   const dbId = dbOcid(a);
@@ -1676,22 +1847,19 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan, onTopSql, onEvidence }) {
         {/* action */}
         <td style={{ padding:"8px 10px", verticalAlign:"top", paddingTop:8, textAlign:"right" }}>
           <div style={{ display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", whiteSpace:"nowrap" }}>
-            {db && (dbId || dbSys) && (
-              <button onClick={()=>onTopSql(a)}
-                title={dbSys && !dbId
-                  ? "Try Top SQL / AWR from the DB System; show DB evidence if access is unavailable"
-                  : "View Top SQL from OCI AWR"}
-                style={MINI_BTN}>
-                Top SQL
-              </button>
-            )}
-            {perfUrl && (
-              <a href={perfUrl} target="_blank" rel="noreferrer"
-                title="Open Performance Hub in the OCI Console"
-                style={{ ...MINI_BTN, textDecoration:"none" }}>
-                Perf Hub <Icon name="external" size={9}/>
+            {db && (dbId || dbSys) && ociTopSqlUrl(a) && (
+              <a href={ociTopSqlUrl(a)} target="_blank" rel="noreferrer"
+                title="Open OCI Top SQL in a new tab (uses your OCI session; asks for login when needed)"
+                style={{ ...MINI_BTN, textDecoration: "none" }}>
+                Top SQL <Icon name="external" size={9}/>
               </a>
             )}
+            <button onClick={()=>onGrafana(a)}
+              title="View the Grafana history chart for this alert"
+              style={{ ...MINI_BTN, color:"var(--rose)",
+                borderColor:"rgba(232,165,152,.32)" }}>
+              <Icon name="grafana" size={10}/> Grafana
+            </button>
             {db && (!dbId || dbSys) && (
               <button onClick={()=>onEvidence(a)}
                 title="DB System / ASM evidence, Grafana chart, and OCI access"
@@ -1791,384 +1959,8 @@ function AlertRow({ a, isNew, eskalasi, onLaporkan, onTopSql, onEvidence }) {
 // just while this Alert Monitor page happens to be open. This page only
 // reads/writes the shared mute flag via alertMute.js.
 
-// Urutan folder sesuai format handover
-const REPORT_FOLDER_ORDER = [
-  "OCI-ILCS", "OCI-HO", "GCP", "Huawei",
-  "Centralized/OCI - HO", "alerts-BTP", "DMDC", "OCI-ILCS/YMS",
-];
-const REPORT_FOLDER_LABELS = {
-  "OCI-ILCS":             "OCI ILCS alerts",
-  "OCI-HO":               "OCI HO alerts",
-  "GCP":                  "GCP alerts",
-  "Huawei":               "Huawei alerts",
-  "Centralized/OCI - HO": "Non-Prometheus alerts",
-  "alerts-BTP":           "EIC alerts",
-  "DMDC":                 "DMDC alerts",
-  "OCI-ILCS/YMS":         "OCI ILCS/YMS alerts",
-};
-
-function fmtDateForReport(dateStr, shift) {
-  if (!dateStr) return "";
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString("en-GB", { day:"numeric", month:"long", year:"numeric" });
-  } catch { return dateStr; }
-}
-
-function buildDailyReport(alerts, opts) {
-  const { tanggal, shift, engineer, closedTickets, backupStatus } = opts;
-  const shiftLabel = shift === "1" ? "Shift 1 ( 09:00 - 21:00)" : "Shift 2 ( 21:00 - 09:00)";
-
-  // group by folder
-  const byFolder = {};
-  for (const a of alerts) {
-    if (!byFolder[a.folder]) byFolder[a.folder] = [];
-    byFolder[a.folder].push(a);
-  }
-
-  // semua folder dari order list
-  const allReportFolders = [
-    ...REPORT_FOLDER_ORDER,
-    ...Object.keys(byFolder).filter(f => !REPORT_FOLDER_ORDER.includes(f)),
-  ];
-
-  let detail = "";
-  let totalAlert = 0;
-  for (const folder of allReportFolders) {
-    const label = REPORT_FOLDER_LABELS[folder] || `Alert ${folder}`;
-    const items = byFolder[folder] || [];
-    totalAlert += items.length;
-    detail += `${label}\n`;
-    if (items.length === 0) {
-      detail += `- (no active alerts)\n`;
-    } else {
-      for (const a of items) {
-        const res  = a.resource && a.resource !== "-" ? a.resource : "";
-        const time = a.active_at ? ` [${fmtTime(a.active_at)}]` : "";
-        // Ambil nomor ticket — generate jika belum ada
-        const alertKey = `${a.name}||${a.resource}||${a.active_at}`;
-        const ticketNum = getOrCreateTicket(alertKey);
-        const ticketStr = ticketNum ? ` [${ticketNum}]` : "";
-        detail += `* ${shortName(a.name)}${res ? " -> " + res : ""}${ticketStr}${time}\n`;
-      }
-    }
-    detail += "\n";
-  }
-
-  // ── Ticket Close ──
-  let ticketSection = "";
-  if (closedTickets && closedTickets.length > 0) {
-    ticketSection = `\n*2. Closed Tickets*\nTotal : ${closedTickets.length}\n\n`;
-    closedTickets.forEach((t, i) => {
-      const ticketNum = (t.detail || "").match(/Ticket:\s*(INC-\S+)/)?.[1] || "-";
-      ticketSection += `${i + 1}. ${ticketNum}\n`;
-    });
-  } else {
-    ticketSection = `\n*2. Closed Tickets*\nTotal : 0\n- (no tickets closed this shift)\n`;
-  }
-
-  // ── Daily Backup Status ──
-  let backupSection = "";
-  if (backupStatus) {
-    const { total, success, failed, rate, health, period, generated, fetchedAt } = backupStatus;
-    // Tanggal period yang dicek
-    const periodStr = period || (fetchedAt ? localISODate(fetchedAt) : "-");
-    // Waktu generate dari log, fallback ke fetchedAt
-    const generatedStr = generated || (fetchedAt
-      ? new Date(fetchedAt).toLocaleString("en-GB", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }) + " WIB"
-      : "-");
-    backupSection = `\n*3. Daily Backup Status*\n`;
-    backupSection += `Period       : ${periodStr}\n`;
-    backupSection += `Generated    : ${generatedStr}\n`;
-    backupSection += `Status       : ${health || "-"}\n`;
-    backupSection += `Total        : ${total ?? "-"}\n`;
-    backupSection += `Success      : ${success ?? "-"}\n`;
-    backupSection += `Failed       : ${failed ?? "-"}\n`;
-    backupSection += `Success Rate : ${rate ?? "-"}\n`;
-  } else {
-    backupSection = `\n*3. Daily Backup Status*\n- (data not available yet)\n`;
-  }
-
-  const sep  = "━━━━━━━━━━━━━━━━";
-  const sep2 = "━━━━━━━━━━";
-  return `*Daily Report | Standby Monitoring Handover*
-${sep}
-Date     : ${tanggal || "(enter date)"}
-Shift    : ${shiftLabel}
-Engineer : ${engineer || "(enter name)"}
-${sep2}
-*1. Grafana Alerts*
-Total Alerts : ${totalAlert}
-
-Detail:
-${detail.trimEnd()}
-${ticketSection.trimEnd()}
-${backupSection.trimEnd()}
-${sep2}`;
-}
-
-function DailyReportModal({ alerts, onClose }) {
-  const today = localISODate();
-  const [tanggal,       setTanggal]       = useState(today);
-  const [shift,         setShift]         = useState("malam");
-  const [engineer,      setEngineer]      = useState(
-    sessionStorage.getItem("pr_display") || sessionStorage.getItem("pr_user") || ""
-  );
-  const [copied,        setCopied]        = useState(false);
-
-  // Ambil ticket close sesuai rentang waktu shift
-  const [closedTickets, setClosedTickets] = useState([]);
-
-  useEffect(() => {
-    /**
-     * Shift 1: 09:00 – 21:00 pada tanggal yang dipilih
-     * Shift 2: 21:00 kemarin s/d 09:00 hari ini
-     *   → fetch 2 tanggal: tanggal kemarin (jam 21:00+) + tanggal hari ini (jam 00:00-09:00)
-     */
-    const fetchTickets = async () => {
-      try {
-        let datesToFetch = [tanggal];
-
-        // Shift 2 juga butuh data dari hari sebelumnya
-        if (shift !== "1") {
-          const prev = new Date(tanggal);
-          prev.setDate(prev.getDate() - 1);
-          datesToFetch = [localISODate(prev), tanggal];
-        }
-
-        // Fetch semua task dari kedua tanggal
-        const allTasks = [];
-        for (const d of datesToFetch) {
-          const res   = await fetch(`/api/tasks?date=${d}`);
-          const tasks = await res.json();
-          if (Array.isArray(tasks)) allTasks.push(...tasks);
-        }
-
-        // Filter hanya [ALERT] yang Close
-        const alertClosed = allTasks.filter(t =>
-          t.status === "Close" &&
-          (t.description || "").startsWith("[ALERT]")
-        );
-
-        // Filter berdasarkan jam kerja shift
-        const filtered = alertClosed.filter(t => {
-          const taskDate = (t.date || "").slice(0,10);
-          const taskTime = t.end || t.start || "00.00"; // pakai jam selesai
-          // Data menyimpan jam dengan separator titik, misal "17.41" — bukan "17:41".
-          const [hh, mm] = taskTime.replace(":", ".").split(".").map(Number);
-          const mins = (hh||0) * 60 + (mm||0);
-
-          if (shift === "1") {
-            // Shift 1: tgl sama, jam 09:00 (540) – 21:00 (1260)
-            return taskDate === tanggal && mins >= 540 && mins <= 1260;
-          } else {
-            // Shift 2: tgl kemarin jam ≥ 21:00 (1260) ATAU tgl hari ini jam ≤ 09:00 (540)
-            const prevDate = (() => {
-              const d = new Date(tanggal); d.setDate(d.getDate()-1);
-              return localISODate(d);
-            })();
-            return (taskDate === prevDate && mins >= 1260) ||
-                   (taskDate === tanggal  && mins <= 540);
-          }
-        });
-
-        setClosedTickets(filtered);
-      } catch { setClosedTickets([]); }
-    };
-
-    fetchTickets();
-  }, [tanggal, shift]);
-
-  const [backupStatus,  setBackupStatus]  = useState(() => {
-    // Langsung baca dari cache — hasil generate terakhir siapapun yang run
-    try {
-      const cached = localStorage.getItem("pr_backup_status_cache");
-      return cached ? JSON.parse(cached) : null;
-    } catch { return null; }
-  });
-  // true selama fetch log terbaru belum selesai. Dipakai untuk menahan tombol
-  // Copy supaya tidak keburu meng-copy data cache lama (misal period backup
-  // kemarin lusa, bukan kemarin) kalau user klik Copy sesaat setelah halaman
-  // dibuka, sebelum fetch di bawah ini selesai meng-update backupStatus.
-  const [backupLoading, setBackupLoading] = useState(true);
-
-  // Fetch terbaru dari log sebagai update (tidak blocking — cache sudah terisi)
-  useEffect(() => {
-    fetch("/api/logs/pelindo/daily_ilcs_status")
-      .then(r => r.json())
-      .then(d => {
-        const full = (d.logs || []).join("\n");
-        // File log menumpuk terus lintas run (append, bukan overwrite).
-        // Ambil hanya blok SUMMARY paling akhir — kalau tidak, .match() bisa
-        // menangkap ringkasan run lama yang masih ikut dalam 300 baris terakhir.
-        const summaryIdx = full.lastIndexOf("DAILY BACKUP REPORT SUMMARY");
-        const text = summaryIdx !== -1 ? full.slice(summaryIdx) : full;
-        const total   = text.match(/📦 Total\s*:\s*(\d+)/)?.[1]   || text.match(/Total\s*:\s*(\d+)/)?.[1];
-        const success = text.match(/✅ Success\s*:\s*(\d+)/)?.[1]  || text.match(/Success\s*:\s*(\d+)/)?.[1];
-        const failed  = text.match(/❌ Failed\s*:\s*(\d+)/)?.[1]   || text.match(/Failed\s*:\s*(\d+)/)?.[1];
-        const rate    = text.match(/📈 Success Rate\s*:\s*([\d.]+%)/)?.[1] || text.match(/Success Rate\s*:\s*([\d.]+%)/)?.[1];
-        const health  = text.match(/\b(HEALTHY|CRITICAL|WARNING)\b/)?.[0];
-        const period    = text.match(/Period\s*:\s*(\d{4}-\d{2}-\d{2})/)?.[1]    || null;
-        const generated = text.match(/Generated\s*:\s*([\d-]+ [\d:]+ WIB)/)?.[1] || null;
-        if (total || success || failed) {
-          const parsed = { total, success, failed, rate, health, period, generated, fetchedAt: new Date().toISOString() };
-          setBackupStatus(parsed);
-          try { localStorage.setItem("pr_backup_status_cache", JSON.stringify(parsed)); } catch(_){}
-        }
-      })
-      .catch(() => {})
-      .finally(() => setBackupLoading(false));
-  }, []);
-
-  const text = buildDailyReport(alerts, {
-    tanggal: fmtDateForReport(tanggal, shift), shift, engineer,
-    closedTickets, backupStatus,
-  });
-
-  const doCopy = () => {
-    navigator.clipboard.writeText(text)
-      .then(() => {
-        setCopied(true);
-        setTimeout(()=>setCopied(false),2000);
-        logActivity("Copy Daily Report", "report", `Shift ${shift} — ${tanggal}`);
-      })
-      .catch(() => {
-        const el = document.getElementById("dr-textarea");
-        if (el) { el.select(); document.execCommand("copy"); }
-        setCopied(true); setTimeout(()=>setCopied(false),2000);
-      });
-  };
-
-  return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.8)",
-      display:"flex", alignItems:"center", justifyContent:"center",
-      zIndex:1000, padding:20 }}
-      onClick={onClose}>
-      <div style={{ background:"var(--surface)", border:"1px solid var(--border2)", borderRadius:10,
-        width:"100%", maxWidth:640, maxHeight:"90vh", display:"flex",
-        flexDirection:"column", overflow:"hidden" }}
-        onClick={e=>e.stopPropagation()}>
-
-        {/* header */}
-        <div style={{ display:"flex", alignItems:"center", gap:10,
-          padding:"14px 18px", borderBottom:"1px solid var(--border)", flexShrink:0 }}>
-          <span style={{ width:30, height:30, borderRadius:7, background:"var(--blue-dim)",
-            color:"var(--blue)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <Icon name="report" size={15}/>
-          </span>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:13, fontWeight:650, color:"var(--text)" }}>Daily report — handover monitoring</div>
-            <div style={{ fontSize:11, color:"var(--muted)", marginTop:1 }}>Generate and copy the daily handover template.</div>
-          </div>
-          <button onClick={onClose}
-            style={{ background:"none", border:"none", color:"var(--muted)", cursor:"pointer",
-              display:"flex", alignItems:"center", justifyContent:"center", padding:4 }}>
-            <Icon name="close" size={15}/>
-          </button>
-        </div>
-
-        {/* form */}
-        <div style={{ padding:"12px 16px", borderBottom:"1px solid var(--border)",
-          display:"flex", gap:12, flexWrap:"wrap", flexShrink:0 }}>
-          <div style={{ display:"flex", flexDirection:"column", gap:4, flex:1, minWidth:140 }}>
-            <label style={{ fontSize:9, color:"var(--muted2)", textTransform:"uppercase",
-              letterSpacing:".06em" }}>Date</label>
-            <input type="date" value={tanggal} onChange={e=>setTanggal(e.target.value)}
-              style={{ background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:6,
-                color:"var(--text3)", fontSize:11, padding:"5px 8px", fontFamily:"inherit",
-                outline:"none" }}/>
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:4, flex:1, minWidth:140 }}>
-            <label style={{ fontSize:9, color:"var(--muted2)", textTransform:"uppercase",
-              letterSpacing:".06em" }}>Shift</label>
-            <select value={shift} onChange={e=>setShift(e.target.value)}
-              style={{ background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:6,
-                color:"var(--text3)", fontSize:11, padding:"5px 8px", fontFamily:"inherit",
-                outline:"none" }}>
-              <option value="1">Shift 1 (09:00-21:00)</option>
-              <option value="malam">Shift 2 (21:00-09:00)</option>
-            </select>
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:4, flex:1, minWidth:140 }}>
-            <label style={{ fontSize:9, color:"var(--muted2)", textTransform:"uppercase",
-              letterSpacing:".06em" }}>Engineer name</label>
-            <input value={engineer} onChange={e=>setEngineer(e.target.value)}
-              placeholder="Engineer name…"
-              style={{ background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:6,
-                color:"var(--text3)", fontSize:11, padding:"5px 8px", fontFamily:"inherit",
-                outline:"none" }}/>
-          </div>
-          {/* Info row: ticket close + backup status */}
-          <div style={{ width:"100%", display:"flex", gap:8, flexWrap:"wrap", marginTop:2 }}>
-            <span style={{ fontSize:10, color:"var(--muted)",
-              background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:5,
-              padding:"3px 10px" }}>
-              Tickets closed this shift: <strong style={{color:"var(--green)"}}>{closedTickets.length}</strong>
-              <span style={{color:"var(--muted3)",fontSize:9,marginLeft:4}}>
-                {shift==="1" ? "(09:00–21:00)" : "(21:00–09:00)"}
-              </span>
-            </span>
-            {backupStatus ? (
-              <span style={{ fontSize:10,
-                color: backupStatus.health==="HEALTHY" ? "var(--green)"
-                     : backupStatus.health==="WARNING"  ? "var(--amber)" : "var(--red)",
-                background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:5,
-                padding:"3px 10px" }}>
-                ILCS backup: {backupStatus.health} ({backupStatus.success}/{backupStatus.total})
-                {backupStatus.fetchedAt && (
-                  <span style={{ color:"var(--muted3)", marginLeft:6, fontSize:9 }}>
-                    · {new Date(backupStatus.fetchedAt).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
-                  </span>
-                )}
-              </span>
-            ) : (
-              <span style={{ fontSize:10, color:"var(--muted2)",
-                background:"var(--bg3)", border:"1px solid var(--border2)", borderRadius:5,
-                padding:"3px 10px" }}>
-                ILCS backup: loading…
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* preview */}
-        <div style={{ flex:1, overflow:"auto", padding:"12px 16px" }}>
-          <div style={{ fontSize:9, color:"var(--muted2)", marginBottom:6,
-            textTransform:"uppercase", letterSpacing:".06em" }}>Report preview</div>
-          <textarea id="dr-textarea" readOnly value={text}
-            style={{ width:"100%", height:420, background:"var(--bg3)",
-              border:"1px solid var(--border2)", borderRadius:6, color:"var(--text3)",
-              fontFamily:"var(--mono)", fontSize:11,
-              padding:"10px 12px", resize:"none", outline:"none",
-              boxSizing:"border-box", lineHeight:1.75 }}/>
-        </div>
-
-        {/* actions */}
-        <div style={{ display:"flex", gap:10, padding:"0 16px 16px", flexShrink:0 }}>
-          <button onClick={doCopy} disabled={backupLoading}
-            style={{ flex:1, background: backupLoading ? "var(--surface2)" : copied ? "var(--green)" : "var(--accent)",
-              border:"none", borderRadius:6, color: backupLoading ? "var(--muted)" : "#fff", fontFamily:"inherit",
-              fontSize:12, fontWeight:600, padding:"9px 0",
-              cursor: backupLoading ? "not-allowed" : "pointer",
-              transition:"background .2s", display:"flex", alignItems:"center",
-              justifyContent:"center", gap:6 }}>
-            <Icon name={backupLoading ? "clock" : copied ? "check" : "copy"} size={13}/>
-            {backupLoading ? "Loading latest data…" : copied ? "Copied" : "Copy report"}
-          </button>
-          <button onClick={onClose}
-            style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
-              borderRadius:6, color:"var(--text4)", fontFamily:"inherit",
-              fontSize:12, padding:"9px 16px", cursor:"pointer" }}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ─── Alert Table (reusable section) ────────────────── */
-function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onTopSql, onEvidence, title, titleColor, headerBg, dim }) {
+function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onEvidence, onGrafana, title, titleColor, headerBg, dim }) {
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginTop:14, border:"1px solid var(--border)",
@@ -2217,8 +2009,8 @@ function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onTopSql, onEvidence
                 isNew={newSet.has(a._key)}
                 eskalasi={eskalasi}
                 onLaporkan={onLaporkan}
-                onTopSql={onTopSql}
-                onEvidence={onEvidence}/>
+                onEvidence={onEvidence}
+                onGrafana={onGrafana}/>
             ))}
           </tbody>
         </table>
@@ -2230,26 +2022,6 @@ function AlertTable({ alerts, newSet, eskalasi, onLaporkan, onTopSql, onEvidence
 /* ─── MAIN ───────────────────────────────────────────── */
 const ESKALASI_KEY        = "pr_alert_eskalasi";
 const ALERT_TASK_KEY      = "pr_alert_task_ids";
-const TICKET_COOLDOWN_KEY = "pr_alert_ticket_cooldown";
-const COOLDOWN_MS         = 60 * 60 * 1000; // 1 jam
-
-/** Cek apakah alert boleh dapat ticket/task baru */
-function canCreateTicket(alertKey) {
-  let map = {};
-  try { map = JSON.parse(localStorage.getItem(TICKET_COOLDOWN_KEY) || "{}"); } catch {}
-  const last = map[alertKey];
-  if (!last) return true;
-  return (Date.now() - new Date(last).getTime()) > COOLDOWN_MS;
-}
-
-/** Catat timestamp pembuatan ticket */
-function recordTicketCreated(alertKey) {
-  let map = {};
-  try { map = JSON.parse(localStorage.getItem(TICKET_COOLDOWN_KEY) || "{}"); } catch {}
-  map[alertKey] = new Date().toISOString();
-  localStorage.setItem(TICKET_COOLDOWN_KEY, JSON.stringify(map));
-}
-
 /* ── API helpers for tasks ── */
 const taskApiCreate = (task) =>
   fetch("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(task) }).then(r=>r.json());
@@ -2368,9 +2140,9 @@ export default function AlertPage() {
   const [search,     setSearch]     = useState("");
   const [folderFil,  setFolderFil]  = useState("");
   const [modal,      setModal]      = useState(null);
-  const [showReport, setShowReport] = useState(false);
   const [topSqlFor, setTopSqlFor] = useState(null);
   const [evidenceFor, setEvidenceFor] = useState(null);
+  const [grafanaFor, setGrafanaFor] = useState(null);
   const [, setDbCatalogTick] = useState(0);
   const [muted,      setMutedState] = useState(() => isAlertMuted());
   const [toast,      setToast]      = useState(null); // {msg, count}
@@ -2521,13 +2293,6 @@ export default function AlertPage() {
                 animation: loading ? "spin 1s linear infinite" : "none" }}><Icon name="refresh" size={12}/></span>
               {" "}Refresh
             </button>
-            <button onClick={() => setShowReport(true)}
-              style={{ background:"var(--surface2)", border:"1px solid var(--border2)",
-                borderRadius:6, color:"var(--text4)", fontSize:11, fontWeight:600,
-                padding:"5px 12px", cursor:"pointer", fontFamily:"inherit",
-                display:"flex", alignItems:"center", gap:5 }}>
-              <Icon name="report" size={12}/> Daily report
-            </button>
             <button onClick={() => {
                 localStorage.removeItem(ALERT_TASK_KEY);
                 setAlertTaskIds(new Set());
@@ -2628,8 +2393,8 @@ export default function AlertPage() {
               <AlertTable
                 alerts={activeAlerts} newSet={newSet}
                 eskalasi={eskalasi} onLaporkan={setModal}
-                onTopSql={setTopSqlFor}
                 onEvidence={setEvidenceFor}
+                onGrafana={setGrafanaFor}
                 title={`Active alerts (< 12h) — ${activeAlerts.length} firing`}
                 titleColor="var(--red)"
                 headerBg="var(--bg3)"
@@ -2641,8 +2406,8 @@ export default function AlertPage() {
               <AlertTable
                 alerts={oldAlerts} newSet={newSet}
                 eskalasi={eskalasi} onLaporkan={setModal}
-                onTopSql={setTopSqlFor}
                 onEvidence={setEvidenceFor}
+                onGrafana={setGrafanaFor}
                 title={`Long running (> 12h) — ${oldAlerts.length} alerts`}
                 titleColor="var(--amber)"
                 headerBg="var(--bg3)"
@@ -2667,6 +2432,11 @@ export default function AlertPage() {
         <TopSqlPage alert={topSqlFor} onClose={() => setTopSqlFor(null)}/>
       )}
 
+      {/* ── Grafana history chart ── */}
+      {grafanaFor && (
+        <GrafanaChartModal alert={grafanaFor} onClose={() => setGrafanaFor(null)}/>
+      )}
+
       {/* ── Evidence Modal: health URL vs DB/K8s/Node ── */}
       {evidenceFor && (isHealthCheckAlert(evidenceFor) ? (
         <HealthCheckModal alert={evidenceFor} onClose={() => setEvidenceFor(null)}/>
@@ -2676,13 +2446,6 @@ export default function AlertPage() {
           onClose={() => setEvidenceFor(null)}
           onTopSql={(a) => { setEvidenceFor(null); setTopSqlFor(a); }}/>
       ))}
-
-      {/* ── Daily Report Modal ── */}
-      {showReport && (
-        <DailyReportModal
-          alerts={withKey}
-          onClose={() => setShowReport(false)}/>
-      )}
 
       {/* ── Toast notif ── */}
       {toast && (

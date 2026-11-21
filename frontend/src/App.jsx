@@ -6,6 +6,7 @@ import CustomerPage from "./pages/CustomerPage.jsx";
 import FilesPage    from "./pages/FilesPage.jsx";
 import LoginPage    from "./pages/LoginPage.jsx";
 import AlertPage    from "./pages/AlertPage.jsx";
+import DailyReportPage from "./pages/DailyReportPage.jsx";
 import EngineerActivity from "./pages/EngineerActivity.jsx";
 import CustomersPage from "./pages/CustomersPage.jsx";
 import AccountsPage from "./pages/AccountsPage.jsx";
@@ -28,6 +29,7 @@ const IDLE_LOGOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
 const PAGE_META = {
   dashboard:           { group: "Monitoring",     label: "Dashboard" },
   "alert-monitor":     { group: "Monitoring",     label: "Grafana Alerts" },
+  "daily-report":      { group: "Workflow",       label: "Daily Report" },
   "daily-task":        { group: "Workflow",       label: "Tickets" },
   "generate-report":   { group: "Workflow",       label: "Weekly Reports" },
   files:               { group: "Workflow",       label: "Report History" },
@@ -48,6 +50,7 @@ const NAV_GROUPS = [
     { key: "alert-monitor",   icon: "alert",     label: "Grafana Alerts" },
   ]},
   { section: "Workflow", items: [
+    { key: "daily-report",    icon: "calendar",  label: "Daily Report" },
     { key: "daily-task",      icon: "ticket",    label: "Tickets" },
     { key: "generate-report", icon: "report",    label: "Weekly Reports" },
     { key: "files",           icon: "history",   label: "Report History" },
@@ -222,6 +225,7 @@ export default function App() {
         {page==="generate-report" && <GenerateReport customers={customers} navigate={navigate} darkMode={darkMode}/>}
         {page==="daily-task"      && <DailyTask customers={customers} navigate={navigate} darkMode={darkMode}/>}
         {page==="alert-monitor"   && <AlertPage darkMode={darkMode}/>}
+        {page==="daily-report"    && <DailyReportPage navigate={navigate}/>}
         {page==="engineer-activity" && <EngineerActivity navigate={navigate}/>}
         {page==="customer"  && custId && <CustomerPage customerId={custId} navigate={navigate} ociSession={ociSess} running={running} setRunning={setRunning} statuses={statuses} setStatuses={setStatuses} logs={logs} setLogs={setLogs} activeLog={activeLog} setActiveLog={setActiveLog} darkMode={darkMode}/>}
         {page==="files"     && custId && <FilesPage customer={fullCust} navigate={navigate} darkMode={darkMode}/>}
@@ -470,7 +474,7 @@ const SB = {
   avatar:      {width:30,height:30,borderRadius:"50%",background:"var(--accent-grad)",color:"#fff",
                 fontSize:10.5,fontWeight:700,display:"flex",alignItems:"center",
                 justifyContent:"center",flexShrink:0,letterSpacing:".02em",border:"none",cursor:"pointer",
-                boxShadow:"0 0 0 1px rgba(232,194,122,.35), 0 0 18px -4px rgba(225,29,72,.7)"},
+                boxShadow:"0 0 0 1px rgba(232,194,122,.35), 0 0 18px -4px rgba(139,18,38,.6)"},
   userName:    {display:"block",fontSize:11.5,fontWeight:600,color:"var(--side-strong)",
                 overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.3},
   userRole:    {display:"block",fontSize:9.5,color:"var(--side-muted)",marginTop:1},

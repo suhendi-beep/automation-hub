@@ -37,7 +37,7 @@ export default function GenerateReport({ customers, navigate }) {
 
   // Use custDetail.automations if available, else fallback to prop
   const customer  = custDetail || customers.find(c=>c.id===selCust);
-  const autos     = customer?.automations || [];
+  const autos     = (customer?.automations || []).filter(a => !a.hidden);
   const auto      = autos.find(a=>a.id===selAuto);
 
   const today = todayWIB();

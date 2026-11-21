@@ -54,7 +54,7 @@ export const btnPrimary = {
   borderColor: "rgba(255,255,255,.14)",
   color: "#fff",
   fontWeight: 600,
-  boxShadow: "0 10px 28px -10px rgba(225,29,72,.65), inset 0 1px 0 rgba(255,255,255,.24)",
+  boxShadow: "0 10px 28px -10px rgba(139,18,38,.6), inset 0 1px 0 rgba(255,255,255,.24)",
 };
 
 export const btnDanger = {
