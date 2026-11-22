@@ -48,6 +48,14 @@ def test_password_is_hashed_at_rest(client):
         assert admin.password_hash.startswith(("pbkdf2:", "scrypt:"))
 
 
+def test_login_username_ignores_case_and_spaces(client):
+    response = client.post(
+        "/api/auth/login", json={"username": "  Admin ", "password": "admin"}
+    )
+    assert response.status_code == 200
+    assert response.get_json()["user"] == "admin"
+
+
 def test_login_lockout_is_per_username(client):
     for _ in range(5):
         response = client.post(

@@ -1882,7 +1882,7 @@ def change_password():
 @app.route("/api/auth/forgot-password", methods=["POST"])
 def forgot_password():
     data = request.json or {}
-    username = (data.get("username") or "").strip()
+    username = str(data.get("username") or "").strip().lower()
     new = data.get("new_password", "")
     err = _password_policy_error(new)
     if err:
@@ -2103,7 +2103,7 @@ def run_schedule(schedule_id):
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
     data = request.json or {}
-    username = data.get("username", "")
+    username = str(data.get("username") or "").strip().lower()
     password = data.get("password", "")
     ip = _client_ip()
     if _rate_limited(ip, username):
