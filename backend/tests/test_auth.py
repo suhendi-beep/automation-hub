@@ -46,3 +46,19 @@ def test_password_is_hashed_at_rest(client):
     with db.session_scope() as session:
         admin = session.get(User, "admin")
         assert admin.password_hash.startswith(("pbkdf2:", "scrypt:"))
+
+
+def test_login_lockout_is_per_username(client):
+    for _ in range(5):
+        response = client.post(
+            "/api/auth/login", json={"username": "typo-user", "password": "wrong"}
+        )
+        assert response.status_code == 401
+    locked = client.post("/api/auth/login", json={"username": "typo-user", "password": "wrong"})
+    assert locked.status_code == 429
+
+    other = client.post("/api/auth/login", json={"username": "another-user", "password": "wrong"})
+    assert other.status_code == 401
+    assert client.post(
+        "/api/auth/login", json={"username": "admin", "password": "admin"}
+    ).status_code == 200

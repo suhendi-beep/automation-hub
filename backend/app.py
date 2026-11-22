@@ -138,8 +138,10 @@ _serializer = URLSafeTimedSerializer(SECRET_KEY, salt="automation-hub-auth")
 TOKEN_MAX_AGE = int(os.getenv("AUTH_TOKEN_MAX_AGE", str(12 * 3600)))
 
 LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+LOGIN_MAX_ATTEMPTS_PER_IP = int(os.getenv("LOGIN_MAX_ATTEMPTS_PER_IP", "30"))
 LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "300"))
 _login_attempts = defaultdict(list)
+_ip_attempts = defaultdict(list)
 _login_lock = threading.Lock()
 
 REGISTRY = {
@@ -243,22 +245,40 @@ def _client_ip():
     return (forwarded.split(",")[0].strip() or request.remote_addr or "unknown")
 
 
-def _rate_limited(ip):
+def _prune_attempts(attempts, now):
+    return [t for t in attempts if now - t < LOGIN_WINDOW_SECONDS]
+
+
+def _rate_limited(ip, username):
+    now = time.time()
+    key = (ip, username)
+    with _login_lock:
+        attempts = _prune_attempts(_login_attempts.get(key, []), now)
+        ip_attempts = _prune_attempts(_ip_attempts.get(ip, []), now)
+        if attempts:
+            _login_attempts[key] = attempts
+        else:
+            _login_attempts.pop(key, None)
+        if ip_attempts:
+            _ip_attempts[ip] = ip_attempts
+        else:
+            _ip_attempts.pop(ip, None)
+        return (
+            len(attempts) >= LOGIN_MAX_ATTEMPTS
+            or len(ip_attempts) >= LOGIN_MAX_ATTEMPTS_PER_IP
+        )
+
+
+def _record_login_failure(ip, username):
     now = time.time()
     with _login_lock:
-        attempts = [t for t in _login_attempts[ip] if now - t < LOGIN_WINDOW_SECONDS]
-        _login_attempts[ip] = attempts
-        return len(attempts) >= LOGIN_MAX_ATTEMPTS
+        _login_attempts[(ip, username)].append(now)
+        _ip_attempts[ip].append(now)
 
 
-def _record_login_failure(ip):
+def _clear_login_failures(ip, username):
     with _login_lock:
-        _login_attempts[ip].append(time.time())
-
-
-def _clear_login_failures(ip):
-    with _login_lock:
-        _login_attempts.pop(ip, None)
+        _login_attempts.pop((ip, username), None)
 
 
 PUBLIC_ENDPOINTS = {"/api/ping", "/api/auth/login", "/api/auth/forgot-password"}
@@ -2082,20 +2102,19 @@ def run_schedule(schedule_id):
 # ══════════════════════════════════════════════════════════════
 @app.route("/api/auth/login", methods=["POST"])
 def auth_login():
-    ip = _client_ip()
-    if _rate_limited(ip):
-        return jsonify({"ok": False, "error": "Too many attempts. Try again later."}), 429
-
     data = request.json or {}
     username = data.get("username", "")
     password = data.get("password", "")
+    ip = _client_ip()
+    if _rate_limited(ip, username):
+        return jsonify({"ok": False, "error": "Too many attempts. Try again later."}), 429
 
     user = repo.get_user(username)
     if not user or not _verify_password(user.get("password", ""), password):
-        _record_login_failure(ip)
+        _record_login_failure(ip, username)
         return jsonify({"ok": False, "error": "Invalid username or password"}), 401
 
-    _clear_login_failures(ip)
+    _clear_login_failures(ip, username)
     return jsonify({
         "ok": True,
         "token": _issue_token(user),
